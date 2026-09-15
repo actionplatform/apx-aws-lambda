@@ -119,6 +119,10 @@ class ProxyTest(unittest.TestCase):
         exec_call = self.iam.create_role.call_args_list[0].kwargs
         self.assertEqual(exec_call["PermissionsBoundary"], os.environ["BOUNDARY_ARN"])
         self.assertEqual(exec_call["Path"], "/action-platform/")
+        self.assertIn(
+            {"Key": "action-platform:prefix", "Value": "ap-acme-shop-orders"},
+            exec_call["Tags"],
+        )
 
     def test_credentials_follow_the_grants_by_prefix(self):
         self.rows["acme/shop/orders"] = {
