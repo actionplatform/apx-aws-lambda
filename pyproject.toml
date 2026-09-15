@@ -1,7 +1,7 @@
 [project]
-name = "action-platform-plugin-aws"
+name = "apx-aws-lambda"
 version = "0.1.0"
-description = "AWS for Action Platform: deploy targets and overlays for Lambda (SAM) and Amplify Hosting, plus tools to read what is deployed."
+description = "AWS Lambda for Action Platform: the aws/lambda deploy target (SAM) with its overlay, and tools to read stacks and functions."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
@@ -12,21 +12,20 @@ dependencies = ["action-platform>=0.16"]
 dev = ["pytest>=8", "ruff>=0.6", "action-platform[mcp]"]
 
 [project.entry-points."action_platform.plugins"]
-aws = "action_platform_plugin_aws:AwsPlugin"
+aws-lambda = "apx_aws_lambda:AwsLambdaPlugin"
 
 [project.entry-points."action_platform.deploy_target"]
-"aws/lambda" = "action_platform_plugin_aws.lambda_:LambdaTarget"
-"aws/amplify" = "action_platform_plugin_aws.amplify:AmplifyTarget"
+"aws/lambda" = "apx_aws_lambda.lambda_:LambdaTarget"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["action_platform_plugin_aws*"]
+include = ["apx_aws_lambda*"]
 
 [tool.setuptools.package-data]
-action_platform_plugin_aws = ["overlays/**/*", "overlays/**/.*", "overlays/**/.github/workflows/*"]
+apx_aws_lambda = ["overlays/**/*", "overlays/**/.*", "overlays/**/.github/workflows/*"]
 
 [tool.ruff]
 line-length = 88

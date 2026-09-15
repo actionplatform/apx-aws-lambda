@@ -1,4 +1,4 @@
-"""The plugin: overlays for the two targets, `action-platform aws` commands, `aws.*` tools."""
+"""The plugin: the aws/lambda overlay, `action-platform aws-lambda` commands, `aws_lambda_*` tools."""
 
 from __future__ import annotations
 
@@ -6,16 +6,18 @@ from pathlib import Path
 
 from action_platform.abc import Plugin, Surface
 
-from action_platform_plugin_aws import cli
-from action_platform_plugin_aws.tools import register_tools
+from apx_aws_lambda import cli
+from apx_aws_lambda.tools import register_tools
 
 
-class AwsPlugin(Plugin):
-    slug = "aws"
-    description = "Deploy to AWS Lambda (SAM) and Amplify Hosting; read stacks, functions and Amplify jobs"
+class AwsLambdaPlugin(Plugin):
+    slug = "aws-lambda"
+    description = (
+        "Deploy to AWS Lambda with SAM; read CloudFormation stacks and functions"
+    )
     min_core = "0.16"
     needs = [
-        "tool: aws (AWS CLI v2); sam (AWS SAM CLI) for aws/lambda",
+        "tool: aws (AWS CLI v2), sam (AWS SAM CLI)",
         "env: AWS_PROFILE or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_REGION",
         "net: *.amazonaws.com",
     ]
@@ -29,4 +31,4 @@ class AwsPlugin(Plugin):
             register_tools(surface.mcp)
 
         if surface.cli is not None:
-            surface.cli.add_typer(cli.app, name="aws")
+            surface.cli.add_typer(cli.app, name="aws-lambda")

@@ -9,7 +9,7 @@ from action_platform.abc import DeployTarget
 from action_platform.core.context import Context, DeployResult, Diagnosis
 from action_platform.core.exception import DeployError
 
-from action_platform_plugin_aws import shell
+from apx_aws_lambda import shell
 
 
 class LambdaTarget(DeployTarget):

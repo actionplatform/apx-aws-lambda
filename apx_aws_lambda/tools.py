@@ -1,4 +1,4 @@
-"""`aws.*` MCP tools: read-only looks at what is deployed. Deploying stays with the core's `deploy` tool, which drives the targets."""
+"""`aws_lambda_*` MCP tools: read-only looks at what is deployed. Deploying stays with the core's `deploy` tool, which drives the targets."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from action_platform.mcp.annotations import READ_ONLY
 
-from action_platform_plugin_aws import shell
+from apx_aws_lambda import shell
 
 Region = Annotated[
     Optional[str], Field(description="AWS region; default from the environment")
@@ -26,13 +26,6 @@ class Function(BaseModel):
     runtime: Optional[str] = None
     memory: Optional[int] = None
     last_modified: Optional[str] = None
-
-
-class Job(BaseModel):
-    id: str
-    status: str
-    type: Optional[str] = None
-    started: Optional[str] = None
 
 
 def register_tools(mcp: Any) -> None:
@@ -84,31 +77,4 @@ def register_tools(mcp: Any) -> None:
             )
             for f in data.get("Functions", [])
             if f["FunctionName"].startswith(prefix)
-        ]
-
-    @mcp.tool(annotations=READ_ONLY)
-    def amplify_jobs(
-        app_id: str, branch: str = "main", limit: int = 5, region: Region = None
-    ) -> list[Job]:
-        """The last builds of an Amplify branch."""
-        data = shell.aws(
-            "amplify",
-            "list-jobs",
-            "--app-id",
-            app_id,
-            "--branch-name",
-            branch,
-            "--max-results",
-            str(limit),
-            region=region,
-        )
-
-        return [
-            Job(
-                id=j["jobId"],
-                status=j["status"],
-                type=j.get("jobType"),
-                started=j.get("startTime"),
-            )
-            for j in data.get("jobSummaries", [])
         ]
