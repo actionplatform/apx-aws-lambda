@@ -37,27 +37,41 @@ class LambdaTarget(DeployTarget):
         self.config = config
         self.role_arn = role_arn or os.environ.get("AWS_ROLE_ARN")
         self.session_name = session_name
-        self.proxy = (
-            ProxyClient(proxy_url, app or os.environ.get("AP_APP", ""))
-            if proxy_url
-            else None
-        )
+        self.proxy_url = proxy_url
+        self.app = app
         self._env: dict[str, str] | None = None
+
+    def proxy(self, ctx: Context) -> ProxyClient | None:
+        """The deploy proxy, when one is named: `[deploy] proxy_url` and `app` in platform.toml, else what the platform set for the organization (`AP_AWS_LAMBDA_PROXY_URL`, `AP_APP` in `ctx.env`), else the process environment."""
+        url = (
+            self.proxy_url
+            or ctx.env.get("AP_AWS_LAMBDA_PROXY_URL")
+            or os.environ.get("AP_AWS_LAMBDA_PROXY_URL")
+        )
+
+        if not url:
+            return None
+
+        app = self.app or ctx.env.get("AP_APP") or os.environ.get("AP_APP", "")
+
+        return ProxyClient(url, app)
 
     def env(self, ctx: Context) -> dict[str, str] | None:
         """The environment `aws` and `sam` run with: the proxy's credentials, else temporary credentials from `role_arn`, else the caller's own."""
-        if self.proxy is None and not self.role_arn:
+        if self._env is not None:
+            return self._env
+
+        proxy = self.proxy(ctx)
+
+        if proxy is None and not self.role_arn:
             return None
 
-        if self._env is None:
-            granted = (
-                self.proxy.env(ctx)
-                if self.proxy is not None
-                else assume_role(
-                    ctx, self.role_arn or "", self.session_name, self.region
-                )
-            )
-            self._env = {**os.environ, **granted}
+        granted = (
+            proxy.env(ctx)
+            if proxy is not None
+            else assume_role(ctx, self.role_arn or "", self.session_name, self.region)
+        )
+        self._env = {**os.environ, **granted}
 
         return self._env
 
