@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from action_platform.core.exception import DeployError
+from action_platform.settings import settings
 
 MODULES = {"aws": "awscli", "sam": "samcli"}
 
@@ -30,11 +32,31 @@ def require(tool: str, hint: str) -> list[str]:
     raise DeployError(f"{tool} is not installed: {hint}")
 
 
+def module_env(args: list[str], env: dict[str, str] | None) -> dict[str, str] | None:
+    """`python -m awscli` in a child process must see the plugins volume the parent added with `site.addsitedir`; PYTHONPATH carries it over."""
+    if args[:1] != [sys.executable] or settings.PLUGINS_DIR is None:
+        return env
+
+    merged = dict(env if env is not None else os.environ)
+    current = merged.get("PYTHONPATH", "")
+    plugins = str(settings.PLUGINS_DIR)
+
+    if plugins not in current.split(os.pathsep):
+        merged["PYTHONPATH"] = os.pathsep.join(p for p in (plugins, current) if p)
+
+    return merged
+
+
 def run(
     args: list[str], cwd: Path | None = None, env: dict[str, str] | None = None
 ) -> str:
     result = subprocess.run(
-        args, cwd=cwd, env=env, capture_output=True, text=True, check=False
+        args,
+        cwd=cwd,
+        env=module_env(args, env),
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
     if result.returncode != 0:

@@ -1,6 +1,7 @@
 """The target drives `aws` and `sam`; here both are fakes, so what is asserted is the sequence and the answers."""
 
 import json
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,6 +11,7 @@ from action_platform.core.context import Context
 from action_platform.core.exception import DeployError
 from action_platform.core.scaffold.templates import Matrix, with_plugin_clouds
 from action_platform.plugins import Loaded, Plugins, PluginState, registry
+from action_platform.settings import settings
 
 from apx_aws_lambda import AwsLambdaPlugin, shell
 from apx_aws_lambda.lambda_ import LambdaTarget
@@ -191,3 +193,14 @@ class AssumeRoleTest(unittest.TestCase):
                 )
 
         self.assertIn("log in", str(caught.exception))
+
+
+class ModuleEnvTest(unittest.TestCase):
+    def test_the_plugins_volume_reaches_a_python_m_child(self):
+        with mock.patch.object(settings, "PLUGINS_DIR", Path("/data/plugins")):
+            env = shell.module_env([sys.executable, "-m", "awscli"], {"PATH": "/bin"})
+            same = shell.module_env(["/usr/bin/aws"], {"PATH": "/bin"})
+
+        self.assertEqual(env["PYTHONPATH"], "/data/plugins")
+        self.assertEqual(env["PATH"], "/bin")
+        self.assertEqual(same, {"PATH": "/bin"})
