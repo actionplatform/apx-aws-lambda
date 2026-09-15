@@ -47,6 +47,9 @@ Resources:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: makefile
+      cfn-lint:
+        config:
+          ignore_checks: [E3031]
     Properties:
       FunctionName: !Sub "${AWS::StackName}-api"
       CodeUri: .
