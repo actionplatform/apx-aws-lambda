@@ -7,8 +7,9 @@ milliseconds. Stateless transports are the app's own concern (see create_app).
 
 import os
 
-from app import create_app
 from mangum import Mangum
+
+from app import create_app
 
 
 def lambda_handler(event, context):
