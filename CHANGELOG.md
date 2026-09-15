@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.3.4 — 2026-09-15
+
+### Features
+- **plugin:** declare proxy_url as an option and the name AWS Lambda — the platform draws the form
+
+### Refactoring
+- **shell:** no plugins volume to carry into a child — AP_PLUGINS_DIR is gone from the core
+
+### Docs
+- the form is on the card
+- the proxy url is set under Plugins → AWS Lambda
+
+### Tests
+- **shell:** the child env
+
+### Build
+- action-platform>=0.17.9 (Plugin.options)
+
 ## v0.3.3 — 2026-09-15
 
 ### Features
