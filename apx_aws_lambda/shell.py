@@ -35,9 +35,13 @@ def require(tool: str, hint: str) -> list[str]:
 def module_env(args: list[str], env: dict[str, str] | None) -> dict[str, str] | None:
     """`python -m awscli` in a child process must see the plugins volume the parent added with `site.addsitedir`; PYTHONPATH carries it over."""
     if args[:1] != [sys.executable] or settings.PLUGINS_DIR is None:
-        return env
+        if env is None:
+            return {**os.environ, "SAM_CLI_TELEMETRY": "0"}
+
+        return {"SAM_CLI_TELEMETRY": "0", **env}
 
     merged = dict(env if env is not None else os.environ)
+    merged.setdefault("SAM_CLI_TELEMETRY", "0")
     current = merged.get("PYTHONPATH", "")
     plugins = str(settings.PLUGINS_DIR)
 

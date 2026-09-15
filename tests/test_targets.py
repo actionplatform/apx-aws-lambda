@@ -203,4 +203,4 @@ class ModuleEnvTest(unittest.TestCase):
 
         self.assertEqual(env["PYTHONPATH"], "/data/plugins")
         self.assertEqual(env["PATH"], "/bin")
-        self.assertEqual(same, {"PATH": "/bin"})
+        self.assertEqual(same, {"PATH": "/bin", "SAM_CLI_TELEMETRY": "0"})
