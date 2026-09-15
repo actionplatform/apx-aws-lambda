@@ -18,7 +18,7 @@ Resources:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: ActionPlatformBoundary
-      Description: Caps every execution role the proxy creates to resources named after the app (role tag action-platform:prefix); edit to widen or narrow what apps may do.
+      Description: Caps every execution role the proxy creates; edit to widen or narrow what apps may do.
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
