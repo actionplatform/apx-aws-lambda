@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.3.1 — 2026-09-15
+
+### Features
+- **cli:** action-platform aws-lambda proxy health|create|show|grant|delete
+- **overlay:** ExecutionRoleArn parameter for a role the proxy created
+- **target:** proxy_url + app under [deploy] take credentials from the deploy proxy
+- **proxy:** deploy proxy — a SAM app that grants deploy on an app and hands out its deploy-role credentials
+
+### Bug Fixes
+- **proxy:** UpdateAssumeRolePolicy for the second create; boundary scoped per app through the role's prefix tag
+- **proxy:** verify RS256 with the standard library — no compiled dependency, no pip in sam build; runtime python3.13
+
+### Docs
+- **readme:** rewrite — credentials order, proxy install and API, boundary, where deploys run
+- **readme:** boundary per app, idempotent roles, where deploys run
+- **readme:** deploy.sh
+- **readme:** the deploy proxy
+
+### Tests
+- **proxy:** prefix tag on the execution role
+- **proxy:** RS256 verification against a signed token
+- **proxy:** client, target and handler decisions
+
+### CI
+- **lint:** exclude overlays from ruff, the generated project lints them with its own import layout
+
+### Chores
+- **deps:** cryptography for the oidc tests
+- **gitignore:** sam build output and the proxy's local samconfig
+- **proxy:** deploy.sh — build, deploy, print the proxy url and the next steps
+- **deps:** boto3 and PyJWT for the proxy tests; pytest testpaths
+
 ## v0.3.0 — 2026-09-15
 
 ### Features
