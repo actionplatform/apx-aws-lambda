@@ -1,24 +1,41 @@
 # apx-aws-lambda
 
-AWS Lambda for [Action Platform](https://github.com/actionplatform/action-platform): the `aws/lambda` deploy target (SAM) with its overlay, read-only tools and commands. `apx-` is the prefix every Action Platform extension carries.
+AWS Lambda for [Action Platform](https://github.com/actionplatform/action-platform): the `aws/lambda` deploy target (SAM), its overlay, read-only tools and commands, and a **deploy proxy** for your AWS account so that no AWS key ever lives on the platform, on a machine or in a repository. `apx-` is the prefix every Action Platform extension carries.
 
 ```bash
 action-platform plugin install aws-lambda
 action-platform cloud set aws/lambda        # overlay files come from this plugin
-action-platform deploy --dry-run            # preflight: sam validate, credentials
+action-platform deploy --dry-run            # preflight: credentials, sam validate
 action-platform deploy                      # sam build + sam deploy --config-env <stage>
 action-platform diagnose
 ```
 
+## Contents
+
+- [What the plugin does](#what-the-plugin-does)
+- [Credentials without keys](#credentials-without-keys)
+  - [The deploy proxy (recommended)](#the-deploy-proxy-recommended)
+  - [A role of your own (OIDC)](#a-role-of-your-own-oidc)
+  - [The AWS CLI's own credentials](#the-aws-clis-own-credentials)
+- [Where the deploy runs](#where-the-deploy-runs)
+- [The proxy in detail](#the-proxy-in-detail)
+- [Tools and commands](#tools-and-commands)
+- [Requirements](#requirements)
+- [Development](#development)
+
+## What the plugin does
+
 | | |
 |---|---|
-| Overlay | `template.yaml`, `samconfig.toml`, `lambda_handler.py`, `Makefile`, `requirements/` (IAM), `.github/workflows/deploy.yml` |
+| Overlay | `template.yaml`, `samconfig.toml`, `lambda_handler.py`, `Makefile`, `requirements/` (IAM examples), `.github/workflows/deploy.yml` (optional) |
 | Deploy | `sam build` + `sam deploy --config-env <stage>` (`dev` → `default`, `prod` → `prod`) |
 | Rollback | CloudFormation `rollback-stack` — previous stack state |
 | Diagnose | stack status and the HTTP API url |
 | Destroy | `sam delete` |
+| Tools | `aws_lambda_stacks`, `aws_lambda_functions` |
+| Commands | `action-platform aws-lambda stacks\|functions`, `action-platform aws-lambda proxy …` |
 
-`[deploy]` in platform.toml:
+`[deploy]` in `platform.toml`:
 
 ```toml
 [deploy]
@@ -26,25 +43,45 @@ target = "aws/lambda"
 region = "us-east-1"          # optional; samconfig.toml / AWS_REGION otherwise
 ```
 
+Deploying itself goes through the core's `deploy` / `rollback` / `diagnose`, which drive the target.
+
 ## Credentials without keys
+
+The target looks for credentials in this order:
+
+| Under `[deploy]` | How | Who decides what the app may do |
+|---|---|---|
+| `proxy_url` + `app` | the deploy proxy in your account exchanges a platform token for the app's deploy-role credentials | the proxy's grants, in your account |
+| `role_arn` | `sts assume-role-with-web-identity` with a platform token | the role's trust and permission policies |
+| neither | the AWS CLI's own chain: SSO, profile, instance role | whatever that identity may do |
 
 ### The deploy proxy (recommended)
 
-`proxy/` is a small SAM application for your AWS account: it decides who may deploy which app and hands out 15–60 minute credentials of that app's deploy role. Neither the platform nor a machine ever holds an AWS key; the proxy holds no platform secret — it verifies the platform's OIDC tokens against `/.well-known/jwks.json`.
+`proxy/` is a small SAM application you install **once per AWS account**. It decides who may deploy which app and hands out 15–60 minute credentials of that app's deploy role. It holds no platform secret — it verifies the platform's OIDC tokens against `https://<platform>/.well-known/jwks.json` — and the platform holds no AWS key.
+
+**1. Install the proxy** — with your own AWS credentials, this one time (`aws sso login` or a profile; not the root account):
 
 ```bash
-proxy/deploy.sh https://platform.example.com acme [us-east-1] [action-platform-proxy]
+git clone https://github.com/actionplatform/apx-aws-lambda
+cd apx-aws-lambda
+./proxy/deploy.sh https://platform.example.com acme          # issuer url, organization slug [region] [stack name]
 ```
 
-The stack outputs `ProxyUrl`. Then, per app, with a token that carries `org.manage` (`POST /api/v1/identity/token` with the proxy url as audience):
+The script runs `sam build` + `sam deploy`, prints the stack's `ProxyUrl` and calls `/health`.
+
+**2. Register the app** — from a machine logged in to the platform (`action-platform login`) as someone with `org.manage`:
 
 ```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" $PROXY/apps/acme/shop/orders             # both roles, grant for the app itself
-curl -X PUT  -H "Authorization: Bearer $TOKEN" $PROXY/apps/acme/shop/orders/grants \
-     -d '{"subjects": ["org:acme:project:shop:app:orders", "org:acme"]}'                 # who may deploy: subject prefixes
+P=https://xxxx.lambda-url.us-east-1.on.aws
+
+action-platform aws-lambda proxy create $P acme/shop/orders --region us-east-1
+action-platform aws-lambda proxy grant  $P acme/shop/orders org:acme:project:shop:app:orders org:acme
+action-platform aws-lambda proxy show   $P acme/shop/orders
 ```
 
-And in the repository:
+`create` makes the app's two roles and grants deploy to the app itself; `grant` replaces the list of subject prefixes that may deploy — `org:acme` means anyone in the organization, `org:acme:project:shop` any app of the project, the full subject only deploys the platform runs for that app.
+
+**3. Point the repository at it:**
 
 ```toml
 [deploy]
@@ -53,29 +90,17 @@ proxy_url = "https://xxxx.lambda-url.us-east-1.on.aws"
 app = "acme/shop/orders"
 ```
 
-What the proxy makes per app: `ap-deploy-<org>-<project>-<app>` (CloudFormation, Lambda, API Gateway, logs on stacks named `ap-<org>-<project>-<app>*`, plus SAM's managed bucket) and `ap-exec-<org>-<project>-<app>` (the function's execution role). Every execution role carries the `ActionPlatformBoundary` policy the stack owns: it reaches only resources named after the app — buckets, tables, queues, topics `ap-<org>-<project>-<app>-*`, secrets and parameters under `ap-<org>-<project>-<app>/` — through the role's `action-platform:prefix` tag. Edit the boundary to widen or narrow what apps may do; the app's own `template.yaml` still declares what it needs inside that cap.
+`stack_name` in `samconfig.toml` must start with `ap-acme-shop-orders` — the deploy role reaches those stacks only, and the target refuses anything else before touching AWS.
 
-Both `POST /apps/…` and the roles are idempotent: calling again syncs trust policies, tags and policies without duplicating anything.
+**4.** `action-platform deploy`.
 
-Where the deploy runs is a separate choice: the platform's worker (a deploy job carries the app's token), a logged-in machine (`action-platform deploy`), or the overlay's `.github/workflows/deploy.yml` — the last one is optional and independent of the proxy; delete it when the platform deploys. The target passes the execution role as `ExecutionRoleArn` and refuses a `stack_name` outside the prefix. Admin calls need `org.manage` in the token; a deploy-job token has no scopes, so a compromised worker cannot widen a grant.
+### A role of your own (OIDC)
 
-### A role of your own
-
-Set `role_arn` and nothing else: the target assumes that role with a short-lived OIDC token the platform signs (`sts assume-role-with-web-identity`). No access key on the platform, on your machine or in the repository; what the app may do is the role's policy.
-
-```toml
-[deploy]
-target = "aws/lambda"
-role_arn = "arn:aws:iam::123456789012:role/shop-deploy"
-```
-
-Once per AWS account, register the platform as an identity provider — its discovery document is `https://<platform>/.well-known/openid-configuration`:
+Without the proxy, register the platform as an identity provider once per account and write the trust policy yourself:
 
 ```bash
 aws iam create-open-id-connect-provider --url https://platform.example.com --client-id-list sts.amazonaws.com
 ```
-
-Then a role per app (or per project) whose trust policy names the platform and the app; `requirements/policy.json` from the overlay is its permission policy:
 
 ```json
 {
@@ -92,11 +117,104 @@ Then a role per app (or per project) whose trust policy names the platform and t
 }
 ```
 
-`sub` is `org:<org>:project:<project>:app:<app>` for a deploy the platform runs; `org:<org>` plus an `actor` claim for `action-platform deploy` from a logged-in machine (`StringLike` with `org:acme:*` covers both). Without `role_arn` the AWS CLI's own chain applies: `aws sso login`, a profile, an instance role — still no key in a file when you use SSO.
+`requirements/policy.json` from the overlay is a starting permission policy. Then:
 
-Tools (`action-platform mcp`): `aws_lambda_stacks`, `aws_lambda_functions`. Commands: `action-platform aws-lambda stacks|functions`. Deploying itself goes through the core's `deploy` / `rollback` / `diagnose`, which drive the target.
+```toml
+[deploy]
+target = "aws/lambda"
+role_arn = "arn:aws:iam::123456789012:role/shop-deploy"
+```
 
-Needs: `aws` and `sam` — on PATH when present, otherwise the `awscli` and `aws-sam-cli` packages the plugin depends on run as `python -m`, which is how the hosted platform deploys without the CLIs in its image; `AWS_REGION` (or `region` under `[deploy]`), and either `role_arn` (OIDC, no keys) or the AWS CLI's own credentials. Talks to `*.amazonaws.com` only.
+`sub` is `org:<org>:project:<project>:app:<app>` for a deploy the platform runs; `org:<org>` plus an `actor` claim for `action-platform deploy` from a logged-in machine (`StringLike` with `org:acme:*` covers both).
+
+### The AWS CLI's own credentials
+
+With neither `proxy_url` nor `role_arn`, `aws` and `sam` use what the machine has: `aws sso login`, a profile, an instance role. Still no key in a file when you use SSO — but nothing ties the identity to one app.
+
+## Where the deploy runs
+
+Independent of how credentials are obtained:
+
+| Where | Token for the proxy / role comes from |
+|---|---|
+| the platform's worker (a deploy job) | signed by the platform for that app: `sub = org:…:project:…:app:…`, no scopes |
+| a logged-in machine (`action-platform deploy`) | `POST /api/v1/identity/token` with the user's login: `sub = org:<org>`, `actor`, `scopes` |
+| the overlay's `.github/workflows/deploy.yml` | GitHub's own OIDC — optional, unrelated to the proxy; delete the workflow when the platform deploys |
+
+## The proxy in detail
+
+### What the stack creates
+
+| Resource | Purpose |
+|---|---|
+| Lambda + Function URL | the API (`python3.13`, standard library only — no compiled dependency, so `sam build` needs no pip) |
+| DynamoDB table | one row per app: region, grants |
+| `ActionPlatformBoundary` managed policy | the cap on every execution role the proxy creates |
+| the function's role | may assume `role/action-platform/ap-deploy-*`, manage roles under `/action-platform/`, and create `ap-exec-*` roles only with the boundary attached |
+
+Parameters: `IssuerUrl` (the platform's public url), `Organization` (one proxy serves one organization), `Version`.
+
+### What it creates per app
+
+| Role | Trust | Policy |
+|---|---|---|
+| `ap-deploy-<org>-<project>-<app>` | the proxy's function role | CloudFormation on stacks `ap-<org>-<project>-<app>*`; Lambda, API Gateway and logs with the same prefix; `iam:PassRole` on the execution role; SAM's managed bucket |
+| `ap-exec-<org>-<project>-<app>` | `lambda.amazonaws.com` | `AWSLambdaBasicExecutionRole` + the boundary |
+
+Both live under `/action-platform/`, carry tags `action-platform:app` and `action-platform:prefix`, and are idempotent: `create` again syncs trust policies, tags and policies without duplicating anything. `delete` removes both and the grants.
+
+### The boundary
+
+`ActionPlatformBoundary` is one policy for every app, scoped per app by the role's `action-platform:prefix` tag used as a policy variable in the resources:
+
+- logs: `/aws/lambda/<prefix>*`
+- S3 buckets, DynamoDB tables, SQS queues, SNS topics, Lambda functions: `<prefix>-*`
+- Secrets Manager secrets and SSM parameters: `<prefix>/*`
+- X-Ray tracing
+
+An app's own `template.yaml` still declares what its function needs; the boundary caps it. Edit the boundary in `proxy/template.yaml` (and redeploy) to widen or narrow it for the whole account.
+
+### The API
+
+```
+GET    /health                                   version, issuer, organization, boundary, account
+POST   /apps/{org}/{project}/{app}               create both roles; body {"region": "…"}      org.manage
+GET    /apps/{org}/{project}/{app}               roles and grants                             org.manage
+DELETE /apps/{org}/{project}/{app}               delete roles and grants                      org.manage
+PUT    /apps/{org}/{project}/{app}/grants        {"subjects": ["org:acme", …]}               org.manage
+POST   /apps/{org}/{project}/{app}/credentials   {"duration": 900..3600} → temporary credentials   a grant
+```
+
+Every call except `/health` carries `Authorization: Bearer <platform token>` with `aud` = the proxy url. The proxy checks the signature against the issuer's JWKS, `iss`, `aud`, expiry, and that `organization` is the one it serves. Admin calls need `org.manage` in the token's `scopes`; deploy-job tokens carry no scopes, so a compromised worker cannot widen a grant. `credentials` needs the token's `sub` to start with one of the app's granted subject prefixes.
+
+Errors are `{"error": "…"}`: 400 (input), 401 (token), 403 (organization, scope or grant), 404 (app not created).
+
+The response of `credentials` also carries `stack_prefix` and `execution_role`; the target passes the latter as the overlay's `ExecutionRoleArn` parameter so `sam deploy` needs no `iam:CreateRole`.
+
+### Upgrading
+
+`/health` reports the proxy version; the plugin refuses a proxy older than the `MIN_PROXY` it was built for. Run `proxy/deploy.sh` again from a newer checkout — CloudFormation updates the stack in place, grants stay.
+
+## Tools and commands
+
+| | |
+|---|---|
+| `aws_lambda_stacks` / `action-platform aws-lambda stacks [prefix]` | CloudFormation stacks |
+| `aws_lambda_functions` / `action-platform aws-lambda functions [prefix]` | Lambda functions |
+| `action-platform aws-lambda proxy health <url>` | what the proxy serves |
+| `action-platform aws-lambda proxy create <url> <org/project/app> [--region]` | the app's roles (org.manage) |
+| `action-platform aws-lambda proxy show <url> <org/project/app>` | roles and grants |
+| `action-platform aws-lambda proxy grant <url> <org/project/app> <subject>…` | who may deploy (org.manage) |
+| `action-platform aws-lambda proxy delete <url> <org/project/app>` | remove the app from AWS IAM (org.manage) |
+
+The `proxy` commands take the token from the CLI's login (`action-platform login`).
+
+## Requirements
+
+- `aws` and `sam` — on PATH when present; otherwise the `awscli` and `aws-sam-cli` packages the plugin depends on run as `python -m`, which is how the hosted platform deploys without the CLIs in its image.
+- `AWS_REGION` or `region` under `[deploy]`.
+- Network: `*.amazonaws.com`, and the proxy url when set.
+- Installing the proxy: `sam`, `aws`, credentials for the account, Python 3.13 on PATH for `sam build` (or `sam build --use-container`).
 
 ## Development
 
@@ -105,4 +223,4 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The tests fake `aws` and `sam`; nothing reaches AWS.
+The tests fake `aws`, `sam`, IAM, STS and DynamoDB; nothing reaches AWS. `proxy/tests/test_oidc.py` signs a token with `cryptography` and verifies it with the proxy's standard-library RS256.
