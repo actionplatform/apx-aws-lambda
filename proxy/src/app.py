@@ -10,6 +10,7 @@ import time
 from typing import Any, Callable
 
 import boto3
+from botocore.exceptions import ClientError
 from oidc import Keys, TokenError
 from oidc import verify as verify_token
 
@@ -160,6 +161,8 @@ def handler(event: dict, context: Any) -> dict:
         return reply(401, {"error": f"token: {e}"})
     except ValueError as e:
         return reply(400, {"error": str(e)})
+    except ClientError as e:
+        return reply(500, {"error": f"aws: {e}"})
 
 
 def reply(status: int, data: dict) -> dict:
