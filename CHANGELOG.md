@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.3.3 — 2026-09-15
+
+### Features
+- **target:** the proxy url and app come from the platform (ctx.env) when platform.toml does not name them
+
+### Bug Fixes
+- **overlay:** the layer builds from wheels for arm64/python3.12 on any host, without poetry
+- **overlay:** cfn-lint ignores E3031 on the empty ExecutionRoleArn default; sam runs without the telemetry notice
+- **proxy:** keep the boundary's description — changing it replaces the named policy and the update fails
+- **proxy:** GetRole on a role that does not exist yet is checked without the path; AWS errors answer 500 with the reason
+
+### Docs
+- **readme:** organization-wide proxy url
+
+### Tests
+- **target:** proxy named by the platform
+- **shell:** telemetry off in every child env
+
+### Style
+- **overlay:** tools formatted like the generated repository lints them
+
 ## v0.3.2 — 2026-09-15
 
 ### Bug Fixes

@@ -1,6 +1,6 @@
 [project]
 name = "apx-aws-lambda"
-version = "0.3.2"
+version = "0.3.3"
 description = "AWS Lambda for Action Platform: the aws/lambda deploy target (SAM) with its overlay, and tools to read stacks and functions."
 readme = "README.md"
 license = "Apache-2.0"
