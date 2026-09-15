@@ -67,7 +67,7 @@ class LambdaTarget(DeployTarget):
             return None
 
         granted = (
-            proxy.env(ctx)
+            proxy.env(ctx, self.region)
             if proxy is not None
             else assume_role(ctx, self.role_arn or "", self.session_name, self.region)
         )

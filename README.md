@@ -69,7 +69,7 @@ cd apx-aws-lambda
 
 The script runs `sam build` + `sam deploy`, prints the stack's `ProxyUrl` and calls `/health`.
 
-**2. Register the app** — from a machine logged in to the platform (`action-platform login`) as someone with `org.manage`:
+**2. Register the app** — happens by itself on the first deploy from the platform by someone with `org.manage`: the proxy answers 404 for an app it does not know, the plugin creates it (the deploy token carries `org.manage`) and goes on. Anyone else gets a readable refusal until a manager deploys once. From a machine logged in to the platform (`action-platform login`) as someone with `org.manage`, or to grant other subjects:
 
 ```bash
 P=https://xxxx.lambda-url.us-east-1.on.aws

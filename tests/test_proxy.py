@@ -99,6 +99,83 @@ class ProxyClientTest(unittest.TestCase):
 
         self.assertIn("403 nope", str(caught.exception))
 
+    def test_an_unknown_app_is_registered_on_the_way_when_the_token_may(self):
+        fake = FakeProxy({"POST /apps/acme/shop/orders": {"created": True}})
+        credentials = "POST /apps/acme/shop/orders/credentials"
+
+        def answer(request, timeout=None):
+            if (
+                f"{request.get_method()} {request.full_url.split('proxy.test', 1)[1]}"
+                == credentials
+                and credentials not in fake.answers
+            ):
+                fake.answers[credentials] = GRANTED
+                fake.requests.append(
+                    (
+                        request.get_method(),
+                        "/apps/acme/shop/orders/credentials",
+                        None,
+                        None,
+                    )
+                )
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    404,
+                    "no",
+                    {},
+                    io.BytesIO(b'{"error":"no app acme/shop/orders; create it first"}'),
+                )
+
+            return fake(request, timeout)
+
+        with mock.patch("urllib.request.urlopen", answer):
+            env = ProxyClient("https://proxy.test", "acme/shop/orders").env(
+                self.ctx(), "eu-west-1"
+            )
+
+        self.assertEqual(env["AWS_ACCESS_KEY_ID"], "AKIA")
+        self.assertEqual(
+            [(m, p, b) for m, p, b, _ in fake.requests[1:]],
+            [
+                ("POST", "/apps/acme/shop/orders/credentials", None),
+                ("POST", "/apps/acme/shop/orders", {"region": "eu-west-1"}),
+                ("POST", "/apps/acme/shop/orders/credentials", {"duration": 3600}),
+            ],
+        )
+
+    def test_an_unknown_app_the_token_may_not_register_is_a_readable_error(self):
+        fake = FakeProxy({})
+
+        def answer(request, timeout=None):
+            path = request.full_url.split("proxy.test", 1)[1]
+
+            if path.endswith("/credentials"):
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    404,
+                    "no",
+                    {},
+                    io.BytesIO(b'{"error":"no app; create it first"}'),
+                )
+
+            if path == "/apps/acme/shop/orders":
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    403,
+                    "no",
+                    {},
+                    io.BytesIO(b'{"error":"org.manage is required"}'),
+                )
+
+            return fake(request, timeout)
+
+        with mock.patch("urllib.request.urlopen", answer):
+            with self.assertRaises(DeployError) as caught:
+                ProxyClient("https://proxy.test", "acme/shop/orders").env(self.ctx())
+
+        self.assertIn("organization manager", str(caught.exception))
+        self.assertIn("org.manage is required", str(caught.exception))
+
     def test_an_old_proxy_is_refused(self):
         fake = FakeProxy({}, version="0.0.1")
 
