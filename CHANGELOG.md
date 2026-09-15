@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.2 — 2026-09-15
+
+### Bug Fixes
+- **shell:** python -m awscli/samcli children see the plugins volume through PYTHONPATH
+
+### Tests
+- **shell:** module_env carries the plugins dir
+
 ## v0.3.1 — 2026-09-15
 
 ### Features
