@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.5 — 2026-09-15
+
+### Features
+- **proxy:** an app the proxy does not know is registered on the first deploy when the token carries org.manage
+
+### Docs
+- the first deploy registers the app
+
+### Tests
+- **proxy:** registration on the way, and the refusal when the token may not
+
 ## v0.3.4 — 2026-09-15
 
 ### Features
