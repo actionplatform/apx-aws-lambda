@@ -9,7 +9,7 @@ authors = [{ name = "Action Platform", email = "cloud@actionplatform.io" }]
 dependencies = ["action-platform>=0.17", "awscli>=1.34", "aws-sam-cli>=1.120"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "action-platform[mcp]", "boto3>=1.34", "PyJWT[crypto]>=2.8"]
+dev = ["pytest>=8", "ruff>=0.6", "action-platform[mcp]", "boto3>=1.34", "cryptography>=42"]
 
 [project.entry-points."action_platform.plugins"]
 aws-lambda = "apx_aws_lambda:AwsLambdaPlugin"
