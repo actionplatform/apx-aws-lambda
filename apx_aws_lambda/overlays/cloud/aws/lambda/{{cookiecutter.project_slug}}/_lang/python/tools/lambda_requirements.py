@@ -2,8 +2,9 @@
 
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+import tomllib
 
 
 def caret(version: str) -> str:
@@ -58,7 +59,9 @@ def from_poetry(deps: dict) -> list[str]:
                 continue
 
             version = spec.get("version", "*")
-            extras = f"[{','.join(spec['extras'])}]" if spec.get("extras") else ""
+            extras = (
+                f"[{','.join(spec['extras'])}]" if spec.get("extras") else ""
+            )
 
         rows.append(f"{name}{extras}{constraint(str(version))}")
 
@@ -78,7 +81,10 @@ def main(out: str) -> None:
     else:
         pyproject = tomllib.loads(Path("pyproject.toml").read_text())
         rows = list(pyproject.get("project", {}).get("dependencies") or [])
-        rows += from_poetry(pyproject.get("tool", {}).get("poetry", {}).get("dependencies") or {})
+        rows += from_poetry(
+            pyproject.get("tool", {}).get("poetry", {}).get("dependencies")
+            or {}
+        )
 
     Path(out).write_text("\n".join(rows) + "\n")
 
