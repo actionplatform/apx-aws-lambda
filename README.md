@@ -33,8 +33,7 @@ region = "us-east-1"          # optional; samconfig.toml / AWS_REGION otherwise
 `proxy/` is a small SAM application for your AWS account: it decides who may deploy which app and hands out 15–60 minute credentials of that app's deploy role. Neither the platform nor a machine ever holds an AWS key; the proxy holds no platform secret — it verifies the platform's OIDC tokens against `/.well-known/jwks.json`.
 
 ```bash
-cd proxy && sam deploy --guided \
-  --parameter-overrides IssuerUrl=https://platform.example.com Organization=acme
+proxy/deploy.sh https://platform.example.com acme [us-east-1] [action-platform-proxy]
 ```
 
 The stack outputs `ProxyUrl`. Then, per app, with a token that carries `org.manage` (`POST /api/v1/identity/token` with the proxy url as audience):
