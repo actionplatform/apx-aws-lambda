@@ -13,6 +13,13 @@ from action_platform.remote.client import Remote
 MIN_PROXY = "0.1.0"
 
 
+class ProxyRefused(DeployError):
+    def __init__(self, status: int, detail: str, method: str, path: str) -> None:
+        super().__init__(f"proxy {method} {path}: {status} {detail}")
+        self.status = status
+        self.detail = detail
+
+
 class ProxyClient:
     def __init__(self, url: str, app: str, timeout: float = 20.0) -> None:
         self.url = url.rstrip("/")
@@ -41,7 +48,10 @@ class ProxyClient:
     def health(self) -> dict:
         return self._call("GET", "/health")
 
-    def credentials(self, ctx: Context, duration: int = 3600) -> dict:
+    def credentials(
+        self, ctx: Context, duration: int = 3600, region: str | None = None
+    ) -> dict:
+        """The app's credentials; an app the proxy does not know yet is registered first when the token may (`org.manage`) — the first deploy by an organization manager creates the roles."""
         health = self.health()
 
         if tuple_of(health.get("version", "0")) < tuple_of(MIN_PROXY):
@@ -49,20 +59,42 @@ class ProxyClient:
                 f"proxy {self.url} is {health.get('version')}; this plugin needs {MIN_PROXY} or newer — update the proxy stack"
             )
 
+        token = self.token(ctx)
+
+        try:
+            return self._credentials(token, duration)
+        except ProxyRefused as e:
+            if e.status != 404:
+                raise
+
+        try:
+            self.create(region, token=token)
+        except ProxyRefused as e:
+            if e.status == 403:
+                raise DeployError(
+                    f"the proxy does not know {self.app} yet, and this deploy may not register it ({e.detail}): "
+                    "deploy once as an organization manager, or run `action-platform aws-lambda proxy create`"
+                ) from e
+
+            raise
+
+        return self._credentials(token, duration)
+
+    def _credentials(self, token: str, duration: int) -> dict:
         return self._call(
             "POST",
             f"/apps/{self.app}/credentials",
             {"duration": duration},
-            token=self.token(ctx),
+            token=token,
         )
 
-    def create(self, region: str | None = None) -> dict:
-        """Admin: both roles for the app, granted to the app itself — the caller's token must carry `org.manage`."""
+    def create(self, region: str | None = None, token: str | None = None) -> dict:
+        """Admin: both roles for the app, granted to the app itself — the token must carry `org.manage`."""
         return self._call(
             "POST",
             f"/apps/{self.app}",
             {"region": region} if region else {},
-            token=self.token(),
+            token=token or self.token(),
         )
 
     def show(self) -> dict:
@@ -79,8 +111,8 @@ class ProxyClient:
             token=self.token(),
         )
 
-    def env(self, ctx: Context) -> dict[str, str]:
-        data = self.credentials(ctx)
+    def env(self, ctx: Context, region: str | None = None) -> dict[str, str]:
+        data = self.credentials(ctx, region=region)
 
         return {
             "AWS_ACCESS_KEY_ID": data["access_key_id"],
@@ -119,7 +151,7 @@ class ProxyClient:
             except ValueError:
                 pass
 
-            raise DeployError(f"proxy {method} {path}: {e.code} {detail}") from e
+            raise ProxyRefused(e.code, str(detail), method, path) from e
         except urllib.error.URLError as e:
             raise DeployError(f"proxy {self.url} unreachable: {e.reason}") from e
 
