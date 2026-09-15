@@ -18,7 +18,7 @@ class AwsLambdaPlugin(Plugin):
     min_core = "0.16"
     needs = [
         "tool: aws (AWS CLI v2), sam (AWS SAM CLI)",
-        "env: AWS_PROFILE or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_REGION",
+        "env: AWS_REGION; credentials from role_arn (OIDC, no keys) or the AWS CLI chain (SSO, profile, instance role)",
         "net: *.amazonaws.com",
     ]
 

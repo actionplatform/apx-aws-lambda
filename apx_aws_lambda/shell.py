@@ -35,12 +35,17 @@ def run(
     return result.stdout
 
 
-def aws(*args: str, region: str | None = None, cwd: Path | None = None) -> Any:
+def aws(
+    *args: str,
+    region: str | None = None,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> Any:
     command = [require("aws", "https://aws.amazon.com/cli/"), *args, "--output", "json"]
 
     if region:
         command += ["--region", region]
 
-    out = run(command, cwd=cwd)
+    out = run(command, cwd=cwd, env=env)
 
     return json.loads(out) if out.strip() else {}

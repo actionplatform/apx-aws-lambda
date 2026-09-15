@@ -141,3 +141,51 @@ class PluginTest(unittest.TestCase):
         names = {t.name for t in asyncio.run(server.build().list_tools())}
 
         self.assertLessEqual({"aws_lambda_stacks", "aws_lambda_functions"}, names)
+
+
+class AssumeRoleTest(unittest.TestCase):
+    def test_role_arn_turns_the_platform_token_into_temporary_credentials(self):
+        calls: list[list[str]] = []
+
+        def run(args, cwd=None, env=None):
+            calls.append([Path(args[0]).name, *args[1:]])
+            if args[1:3] == ["sts", "assume-role-with-web-identity"]:
+                return json.dumps(
+                    {
+                        "Credentials": {
+                            "AccessKeyId": "AKIA",
+                            "SecretAccessKey": "s",
+                            "SessionToken": "t",
+                        }
+                    }
+                )
+            return json.dumps(
+                {"Stacks": [{"StackStatus": "UPDATE_COMPLETE", "Outputs": []}]}
+            )
+
+        ctx = Context(repo_root=Path("."), identity=lambda aud: f"jwt-for-{aud}")
+
+        with mock.patch.multiple(shell, run=run, require=lambda t, h: f"/usr/bin/{t}"):
+            env = LambdaTarget(
+                role_arn="arn:aws:iam::1:role/deploy", region="us-east-1"
+            ).env(ctx)
+
+        self.assertEqual(env["AWS_ACCESS_KEY_ID"], "AKIA")
+        self.assertEqual(env["AWS_SESSION_TOKEN"], "t")
+        sts = next(
+            c for c in calls if c[1:3] == ["sts", "assume-role-with-web-identity"]
+        )
+        self.assertIn("jwt-for-sts.amazonaws.com", sts)
+        self.assertIn("arn:aws:iam::1:role/deploy", sts)
+
+    def test_without_an_issuer_or_a_login_it_says_so(self):
+        with (
+            mock.patch.object(shell, "require", lambda t, h: "/usr/bin/aws"),
+            mock.patch.dict("os.environ", {"AP_HOME": "/nonexistent"}, clear=False),
+        ):
+            with self.assertRaises(DeployError) as caught:
+                LambdaTarget(role_arn="arn:aws:iam::1:role/deploy").env(
+                    Context(repo_root=Path("."))
+                )
+
+        self.assertIn("log in", str(caught.exception))
