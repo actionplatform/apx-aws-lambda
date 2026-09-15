@@ -51,7 +51,7 @@ The target looks for credentials in this order:
 
 | Under `[deploy]` | How | Who decides what the app may do |
 |---|---|---|
-| `proxy_url` + `app` — or the organization's proxy url set on the platform (Plugins → AWS Lambda → Configure), which every deploy job carries as `AP_AWS_LAMBDA_PROXY_URL` with `AP_APP` | the deploy proxy in your account exchanges a platform token for the app's deploy-role credentials | the proxy's grants, in your account |
+| `proxy_url` + `app` — or the organization's proxy url set on the platform (Plugins → AWS Lambda), which every deploy job carries as `AP_AWS_LAMBDA_PROXY_URL` with `AP_APP` | the deploy proxy in your account exchanges a platform token for the app's deploy-role credentials | the proxy's grants, in your account |
 | `role_arn` | `sts assume-role-with-web-identity` with a platform token | the role's trust and permission policies |
 | neither | the AWS CLI's own chain: SSO, profile, instance role | whatever that identity may do |
 
