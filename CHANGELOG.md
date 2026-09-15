@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.0 — 2026-09-15
+
+### Features
+- role_arn assumes a role with the platform's OIDC token — no access keys
+
 ## v0.1.0 — 2026-09-15
 
 ### Features
