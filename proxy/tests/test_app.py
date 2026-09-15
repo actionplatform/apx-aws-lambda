@@ -10,7 +10,6 @@ from unittest import mock
 
 try:
     import boto3  # noqa: F401
-    import jwt  # noqa: F401
 
     HAS_DEPS = True
 except ImportError:
@@ -21,7 +20,7 @@ class NoSuchEntity(Exception):
     pass
 
 
-@unittest.skipUnless(HAS_DEPS, "boto3 and PyJWT are not installed")
+@unittest.skipUnless(HAS_DEPS, "boto3 is not installed")
 class ProxyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
