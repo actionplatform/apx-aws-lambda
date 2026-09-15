@@ -10,7 +10,8 @@ import time
 from typing import Any, Callable
 
 import boto3
-import jwt
+from oidc import Keys, TokenError
+from oidc import verify as verify_token
 
 ISSUER = os.environ.get("ISSUER_URL", "").rstrip("/")
 ORGANIZATION = os.environ.get("ORGANIZATION", "")
@@ -24,7 +25,7 @@ SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 MAX_DURATION = 3600
 MIN_DURATION = 900
 
-jwks = jwt.PyJWKClient(f"{ISSUER}/.well-known/jwks.json", cache_keys=True)
+keys = Keys(f"{ISSUER}/.well-known/jwks.json")
 iam = boto3.client("iam")
 sts = boto3.client("sts")
 table = boto3.resource("dynamodb").Table(TABLE) if TABLE else None
@@ -155,7 +156,7 @@ def handler(event: dict, context: Any) -> dict:
         return reply(200, route(claims, body, **params))
     except Refused as e:
         return reply(e.status, {"error": str(e)})
-    except jwt.PyJWTError as e:
+    except TokenError as e:
         return reply(401, {"error": f"token: {e}"})
     except ValueError as e:
         return reply(400, {"error": str(e)})
@@ -198,15 +199,7 @@ def verify(headers: dict, own_url: str) -> dict:
         raise Refused(401, "bearer token required")
 
     token = auth[7:].strip()
-    key = jwks.get_signing_key_from_jwt(token).key
-    claims = jwt.decode(
-        token,
-        key,
-        algorithms=["RS256"],
-        issuer=ISSUER,
-        audience=[own_url, own_url + "/"],
-        leeway=10,
-    )
+    claims = verify_token(token, keys, ISSUER, [own_url, own_url + "/"])
 
     if claims.get("organization") != ORGANIZATION:
         raise Refused(403, f"token is for organization {claims.get('organization')!r}")
@@ -293,18 +286,22 @@ def ensure_role(
     managed: list[str] | None = None,
     inline: dict[str, dict] | None = None,
 ) -> str:
+    role_tags = [
+        {"Key": "action-platform:app", "Value": tags.key},
+        {"Key": "action-platform:prefix", "Value": tags.prefix},
+        {"Key": "action-platform:managed", "Value": "true"},
+    ]
+
     try:
         arn = iam.get_role(RoleName=name)["Role"]["Arn"]
         iam.update_assume_role_policy(RoleName=name, PolicyDocument=json.dumps(trust))
+        iam.tag_role(RoleName=name, Tags=role_tags)
     except iam.exceptions.NoSuchEntityException:
         kwargs: dict[str, Any] = {
             "RoleName": name,
             "Path": PATH,
             "AssumeRolePolicyDocument": json.dumps(trust),
-            "Tags": [
-                {"Key": "action-platform:app", "Value": tags.key},
-                {"Key": "action-platform:managed", "Value": "true"},
-            ],
+            "Tags": role_tags,
         }
 
         if boundary:

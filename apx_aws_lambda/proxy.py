@@ -24,8 +24,8 @@ class ProxyClient:
                 f"[deploy] app must be <org>/<project>/<app>, got {app!r}"
             )
 
-    def token(self, ctx: Context) -> str:
-        token = ctx.identity_token(self.url)
+    def token(self, ctx: Context | None = None) -> str:
+        token = ctx.identity_token(self.url) if ctx is not None else None
 
         if token is not None:
             return token
@@ -54,6 +54,29 @@ class ProxyClient:
             f"/apps/{self.app}/credentials",
             {"duration": duration},
             token=self.token(ctx),
+        )
+
+    def create(self, region: str | None = None) -> dict:
+        """Admin: both roles for the app, granted to the app itself — the caller's token must carry `org.manage`."""
+        return self._call(
+            "POST",
+            f"/apps/{self.app}",
+            {"region": region} if region else {},
+            token=self.token(),
+        )
+
+    def show(self) -> dict:
+        return self._call("GET", f"/apps/{self.app}", token=self.token())
+
+    def delete(self) -> dict:
+        return self._call("DELETE", f"/apps/{self.app}", token=self.token())
+
+    def grant(self, subjects: list[str]) -> dict:
+        return self._call(
+            "PUT",
+            f"/apps/{self.app}/grants",
+            {"subjects": subjects},
+            token=self.token(),
         )
 
     def env(self, ctx: Context) -> dict[str, str]:

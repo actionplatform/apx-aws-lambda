@@ -3,3 +3,5 @@ __pycache__/
 dist/
 .venv/
 .DS_Store
+.aws-sam/
+proxy/samconfig.toml

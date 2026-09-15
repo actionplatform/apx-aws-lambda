@@ -10,7 +10,6 @@ from unittest import mock
 
 try:
     import boto3  # noqa: F401
-    import jwt  # noqa: F401
 
     HAS_DEPS = True
 except ImportError:
@@ -21,7 +20,7 @@ class NoSuchEntity(Exception):
     pass
 
 
-@unittest.skipUnless(HAS_DEPS, "boto3 and PyJWT are not installed")
+@unittest.skipUnless(HAS_DEPS, "boto3 is not installed")
 class ProxyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -120,6 +119,10 @@ class ProxyTest(unittest.TestCase):
         exec_call = self.iam.create_role.call_args_list[0].kwargs
         self.assertEqual(exec_call["PermissionsBoundary"], os.environ["BOUNDARY_ARN"])
         self.assertEqual(exec_call["Path"], "/action-platform/")
+        self.assertIn(
+            {"Key": "action-platform:prefix", "Value": "ap-acme-shop-orders"},
+            exec_call["Tags"],
+        )
 
     def test_credentials_follow_the_grants_by_prefix(self):
         self.rows["acme/shop/orders"] = {
