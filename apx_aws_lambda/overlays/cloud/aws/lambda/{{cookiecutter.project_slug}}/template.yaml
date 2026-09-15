@@ -15,9 +15,14 @@ Parameters:
     Type: String
     Default: ''
     Description: ACM certificate ARN for DomainName, same region. Empty skips the custom domain.
+  ExecutionRoleArn:
+    Type: String
+    Default: ''
+    Description: An existing execution role (the deploy proxy creates one per app). Empty lets SAM create it.
 
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
+  HasExecutionRole: !Not [!Equals [!Ref ExecutionRoleArn, '']]
   HasCustomDomain: !Not [!Equals [!Ref DomainCertificateArn, '']]
 
 Globals:
@@ -47,6 +52,7 @@ Resources:
       CodeUri: .
       Handler: lambda_handler.lambda_handler
       Runtime: python3.12
+      Role: !If [HasExecutionRole, !Ref ExecutionRoleArn, !Ref AWS::NoValue]
       Layers: [!Ref DepsLayer]
       Environment:
         Variables:
