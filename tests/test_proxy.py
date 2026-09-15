@@ -108,6 +108,24 @@ class ProxyClientTest(unittest.TestCase):
 
         self.assertIn("update the proxy", str(caught.exception))
 
+    def test_the_platform_can_name_the_proxy_and_the_app(self):
+        (self.root / "samconfig.toml").write_text(
+            SAMCONFIG.format(stack="ap-acme-shop-orders-dev")
+        )
+        (self.root / "template.yaml").write_text("Resources: {}\n")
+        fake = FakeProxy({"POST /apps/acme/shop/orders/credentials": GRANTED})
+        ctx = self.ctx()
+        ctx.env = {
+            "AP_AWS_LAMBDA_PROXY_URL": "https://proxy.test",
+            "AP_APP": "acme/shop/orders",
+        }
+
+        with mock.patch("urllib.request.urlopen", fake):
+            env = LambdaTarget().env(ctx)
+
+        self.assertEqual(env["AWS_ACCESS_KEY_ID"], "AKIA")
+        self.assertEqual(fake.requests[-1][1], "/apps/acme/shop/orders/credentials")
+
     def test_app_must_be_three_parts(self):
         with self.assertRaises(DeployError):
             ProxyClient("https://proxy.test", "orders")
