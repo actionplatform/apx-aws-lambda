@@ -1,0 +1,26 @@
+{
+  "project_name": "My Project",
+  "project_slug": "{{ cookiecutter.project_name|lower|replace(' ', '-') }}",
+  "github_owner": "actionplatform",
+  "package_name": "{{ cookiecutter.project_slug|replace('-', '_') }}",
+  "language": [
+    "node"
+  ],
+  "type": [
+    "web"
+  ],
+  "ci": [
+    "github",
+    "gitlab",
+    "jenkins"
+  ],
+  "_kind": "cloud",
+  "_cloud": "aws/amplify",
+  "_description": "AWS Amplify Hosting (static build)",
+  "_types": [
+    "web"
+  ],
+  "_copy_without_render": [
+    ".github/workflows/deploy.yml"
+  ]
+}

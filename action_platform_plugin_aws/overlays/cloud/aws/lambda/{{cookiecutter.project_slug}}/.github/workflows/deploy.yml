@@ -1,0 +1,66 @@
+name: Deploy
+
+on:
+  push:
+    branches: [master, main, develop]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ (github.ref_name == 'master' || github.ref_name == 'main') && 'prod' || 'dev' }}
+    env:
+      AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check deploy is configured
+        id: gate
+        run: |
+          if [ -z "$AWS_DEPLOY_ROLE_ARN" ]; then
+            echo "::warning::AWS_DEPLOY_ROLE_ARN is not set for this environment — skipping deploy. See DEPLOY.md."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine stage
+        id: stage
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          if [ "${{ github.ref_name }}" = "master" ] || [ "${{ github.ref_name }}" = "main" ]; then
+            echo "config_env=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "config_env=default" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.gate.outputs.ready == 'true'
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: actions/setup-python@v6
+        if: steps.gate.outputs.ready == 'true'
+        with:
+          python-version: "3.12"
+
+      - if: steps.gate.outputs.ready == 'true'
+        run: pip install "poetry>=1.8.0" poetry-plugin-export aws-sam-cli
+
+      - if: steps.gate.outputs.ready == 'true'
+        run: sam build
+
+      - if: steps.gate.outputs.ready == 'true'
+        run: |
+          sam deploy \
+            --config-env ${{ steps.stage.outputs.config_env }} \
+            --no-confirm-changeset --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              DomainName=${{ vars.DOMAIN_NAME }} \
+              DomainCertificateArn=${{ secrets.DOMAIN_CERTIFICATE_ARN }}

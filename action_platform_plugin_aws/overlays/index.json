@@ -1,0 +1,24 @@
+{
+  "clouds": [
+    {
+      "id": "aws/lambda",
+      "description": "AWS Lambda + HTTP API Gateway via SAM",
+      "types": [
+        "web"
+      ],
+      "languages": [
+        "python"
+      ]
+    },
+    {
+      "id": "aws/amplify",
+      "description": "AWS Amplify Hosting (static build)",
+      "types": [
+        "web"
+      ],
+      "languages": [
+        "node"
+      ]
+    }
+  ]
+}

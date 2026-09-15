@@ -1,0 +1,26 @@
+{
+  "project_name": "My Project",
+  "project_slug": "{{ cookiecutter.project_name|lower|replace(' ', '-') }}",
+  "github_owner": "actionplatform",
+  "package_name": "{{ cookiecutter.project_slug|replace('-', '_') }}",
+  "language": [
+    "python"
+  ],
+  "type": [
+    "web"
+  ],
+  "ci": [
+    "github",
+    "gitlab",
+    "jenkins"
+  ],
+  "_kind": "cloud",
+  "_cloud": "aws/lambda",
+  "_description": "AWS Lambda + HTTP API Gateway via SAM",
+  "_types": [
+    "web"
+  ],
+  "_copy_without_render": [
+    ".github/workflows/deploy.yml"
+  ]
+}
