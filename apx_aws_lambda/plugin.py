@@ -18,8 +18,8 @@ class AwsLambdaPlugin(Plugin):
     min_core = "0.17"
     needs = [
         "tool: aws, sam (bundled as Python packages when not on PATH)",
-        "env: AWS_REGION; credentials from role_arn (OIDC, no keys) or the AWS CLI chain (SSO, profile, instance role)",
-        "net: *.amazonaws.com",
+        "env: AWS_REGION; credentials from proxy_url (the deploy proxy in your account, no keys), role_arn (OIDC, no keys) or the AWS CLI chain (SSO, profile, instance role)",
+        "net: *.amazonaws.com, the proxy url when set",
     ]
 
     @property

@@ -1,6 +1,6 @@
 """`aws/lambda`: a SAM stack per stage. Deploy = `sam build` + `sam deploy --config-env <stage>`; rollback = CloudFormation rollback to the previous stack state; diagnose = stack status and the HTTP API url.
 
-Credentials: with `role_arn` under `[deploy]`, the target assumes that role with a short-lived OIDC token the platform signs (`sts assume-role-with-web-identity`) — no access key anywhere. Without it, the AWS CLI's own chain applies (profile, SSO, instance role)."""
+Credentials, in order: `proxy_url` + `app` under `[deploy]` — the deploy proxy in the account exchanges a platform token for the app's deploy-role credentials; `role_arn` — the target assumes that role with the same token (`sts assume-role-with-web-identity`); neither — the AWS CLI's own chain (profile, SSO, instance role). No access key anywhere."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from action_platform.core.exception import ActionPlatformError, DeployError
 from action_platform.remote.client import Remote
 
 from apx_aws_lambda import shell
+from apx_aws_lambda.proxy import ProxyClient
 
 
 class LambdaTarget(DeployTarget):
@@ -24,6 +25,8 @@ class LambdaTarget(DeployTarget):
         config: str = "samconfig.toml",
         role_arn: str | None = None,
         session_name: str = "action-platform",
+        proxy_url: str | None = None,
+        app: str | None = None,
         **_: object,
     ) -> None:
         self.region = (
@@ -34,18 +37,27 @@ class LambdaTarget(DeployTarget):
         self.config = config
         self.role_arn = role_arn or os.environ.get("AWS_ROLE_ARN")
         self.session_name = session_name
+        self.proxy = (
+            ProxyClient(proxy_url, app or os.environ.get("AP_APP", ""))
+            if proxy_url
+            else None
+        )
         self._env: dict[str, str] | None = None
 
     def env(self, ctx: Context) -> dict[str, str] | None:
-        """The environment `aws` and `sam` run with: temporary credentials from `role_arn` when set, the caller's own otherwise."""
-        if not self.role_arn:
+        """The environment `aws` and `sam` run with: the proxy's credentials, else temporary credentials from `role_arn`, else the caller's own."""
+        if self.proxy is None and not self.role_arn:
             return None
 
         if self._env is None:
-            self._env = {
-                **os.environ,
-                **assume_role(ctx, self.role_arn, self.session_name, self.region),
-            }
+            granted = (
+                self.proxy.env(ctx)
+                if self.proxy is not None
+                else assume_role(
+                    ctx, self.role_arn or "", self.session_name, self.region
+                )
+            )
+            self._env = {**os.environ, **granted}
 
         return self._env
 
@@ -76,6 +88,23 @@ class LambdaTarget(DeployTarget):
 
         return stack
 
+    def _overrides(self, ctx: Context, env: dict[str, str] | None) -> list[str]:
+        """`--parameter-overrides`: the stage's own from samconfig.toml, plus the execution role the proxy granted — the CLI flag replaces the file's, so both go together."""
+        role = (env or {}).get("AP_EXECUTION_ROLE")
+
+        if not role:
+            return []
+
+        params = (
+            self._samconfig(ctx)
+            .get(self._stage(ctx), {})
+            .get("deploy", {})
+            .get("parameters", {})
+        )
+        own = params.get("parameter_overrides") or ""
+
+        return ["--parameter-overrides", f"{own} ExecutionRoleArn={role}".strip()]
+
     def _region(self, ctx: Context) -> str | None:
         params = (
             self._samconfig(ctx)
@@ -95,10 +124,16 @@ class LambdaTarget(DeployTarget):
                 "template.yaml not found: apply the aws/lambda overlay first"
             )
 
-        self._stack(ctx)
-        shell.aws(
-            "sts", "get-caller-identity", region=self._region(ctx), env=self.env(ctx)
-        )
+        stack = self._stack(ctx)
+        env = self.env(ctx)
+        prefix = (env or {}).get("AP_STACK_PREFIX")
+
+        if prefix and not stack.startswith(prefix):
+            raise DeployError(
+                f"stack_name {stack!r} must start with {prefix!r}: the proxy grants deploy on that prefix only"
+            )
+
+        shell.aws("sts", "get-caller-identity", region=self._region(ctx), env=env)
         shell.run(
             [*shell.require("sam", ""), "validate", "--lint"],
             cwd=ctx.repo_root,
@@ -108,7 +143,8 @@ class LambdaTarget(DeployTarget):
     def deploy(self, ctx: Context) -> DeployResult:
         sam = shell.require("sam", "pip install aws-sam-cli")
         stage = self._stage(ctx)
-        shell.run([*sam, "build"], cwd=ctx.repo_root, env=self.env(ctx))
+        env = self.env(ctx)
+        shell.run([*sam, "build"], cwd=ctx.repo_root, env=env)
         args = [
             *sam,
             "deploy",
@@ -119,7 +155,8 @@ class LambdaTarget(DeployTarget):
         if stage != "default":
             args += ["--config-env", stage]
 
-        shell.run(args, cwd=ctx.repo_root, env=self.env(ctx))
+        args += self._overrides(ctx, env)
+        shell.run(args, cwd=ctx.repo_root, env=env)
         url = self._url(ctx)
 
         return DeployResult(
