@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Action Platform deploy proxy - grants deploy on an app and hands out short-lived credentials of that app's deploy role. No platform secret, no AWS key.
+
+Parameters:
+  IssuerUrl:
+    Type: String
+    Description: The platform's public url, the OIDC issuer (https://platform.example.com)
+  Organization:
+    Type: String
+    Description: The organization slug this proxy serves
+  Version:
+    Type: String
+    Default: "0.1.0"
+
+Resources:
+  Boundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: ActionPlatformBoundary
+      Description: Caps every execution role the proxy creates; edit to widen or narrow what apps may do.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:*
+              - lambda:InvokeFunction
+              - s3:*
+              - dynamodb:*
+              - sqs:*
+              - sns:*
+              - secretsmanager:GetSecretValue
+              - ssm:GetParameter*
+              - xray:Put*
+            Resource: "*"
+
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: app
+          AttributeType: S
+      KeySchema:
+        - AttributeName: app
+          KeyType: HASH
+
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.handler
+      Runtime: python3.12
+      Timeout: 20
+      MemorySize: 256
+      FunctionUrlConfig:
+        AuthType: NONE
+      Environment:
+        Variables:
+          ISSUER_URL: !Ref IssuerUrl
+          ORGANIZATION: !Ref Organization
+          TABLE: !Ref Table
+          BOUNDARY_ARN: !Ref Boundary
+          PROXY_VERSION: !Ref Version
+          ACCOUNT_ID: !Ref AWS::AccountId
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref Table
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/action-platform/ap-deploy-*
+            - Effect: Allow
+              Action:
+                - iam:GetRole
+                - iam:DeleteRole
+                - iam:PutRolePolicy
+                - iam:DeleteRolePolicy
+                - iam:AttachRolePolicy
+                - iam:DetachRolePolicy
+                - iam:ListAttachedRolePolicies
+                - iam:ListRolePolicies
+                - iam:TagRole
+              Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/action-platform/*
+            - Effect: Allow
+              Action: iam:CreateRole
+              Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/action-platform/ap-deploy-*
+            - Effect: Allow
+              Action: iam:CreateRole
+              Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/action-platform/ap-exec-*
+              Condition:
+                StringEquals:
+                  iam:PermissionsBoundary: !Ref Boundary
+
+Outputs:
+  ProxyUrl:
+    Value: !GetAtt FunctionUrl.FunctionUrl
+  BoundaryArn:
+    Value: !Ref Boundary
