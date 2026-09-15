@@ -63,7 +63,7 @@ Then a role per app (or per project) whose trust policy names the platform and t
 
 Tools (`action-platform mcp`): `aws_lambda_stacks`, `aws_lambda_functions`. Commands: `action-platform aws-lambda stacks|functions`. Deploying itself goes through the core's `deploy` / `rollback` / `diagnose`, which drive the target.
 
-Needs: AWS CLI v2 (`aws`), SAM CLI (`sam`), `AWS_REGION` (or `region` under `[deploy]`), and either `role_arn` (OIDC, no keys) or the AWS CLI's own credentials. Talks to `*.amazonaws.com` only.
+Needs: `aws` and `sam` — on PATH when present, otherwise the `awscli` and `aws-sam-cli` packages the plugin depends on run as `python -m`, which is how the hosted platform deploys without the CLIs in its image; `AWS_REGION` (or `region` under `[deploy]`), and either `role_arn` (OIDC, no keys) or the AWS CLI's own credentials. Talks to `*.amazonaws.com` only.
 
 ## Development
 

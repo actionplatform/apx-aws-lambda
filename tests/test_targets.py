@@ -43,7 +43,7 @@ class LambdaTargetTest(unittest.TestCase):
             return json.dumps(answers.get(key, {}))
 
         return mock.patch.multiple(
-            shell, run=run, require=lambda tool, hint: f"/usr/bin/{tool}"
+            shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
         )
 
     def ctx(self, stage="dev"):
@@ -165,7 +165,9 @@ class AssumeRoleTest(unittest.TestCase):
 
         ctx = Context(repo_root=Path("."), identity=lambda aud: f"jwt-for-{aud}")
 
-        with mock.patch.multiple(shell, run=run, require=lambda t, h: f"/usr/bin/{t}"):
+        with mock.patch.multiple(
+            shell, run=run, require=lambda t, h: [f"/usr/bin/{t}"]
+        ):
             env = LambdaTarget(
                 role_arn="arn:aws:iam::1:role/deploy", region="us-east-1"
             ).env(ctx)

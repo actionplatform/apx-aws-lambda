@@ -100,7 +100,7 @@ class LambdaTarget(DeployTarget):
             "sts", "get-caller-identity", region=self._region(ctx), env=self.env(ctx)
         )
         shell.run(
-            [shell.require("sam", ""), "validate", "--lint"],
+            [*shell.require("sam", ""), "validate", "--lint"],
             cwd=ctx.repo_root,
             env=self.env(ctx),
         )
@@ -108,8 +108,13 @@ class LambdaTarget(DeployTarget):
     def deploy(self, ctx: Context) -> DeployResult:
         sam = shell.require("sam", "pip install aws-sam-cli")
         stage = self._stage(ctx)
-        shell.run([sam, "build"], cwd=ctx.repo_root, env=self.env(ctx))
-        args = [sam, "deploy", "--no-confirm-changeset", "--no-fail-on-empty-changeset"]
+        shell.run([*sam, "build"], cwd=ctx.repo_root, env=self.env(ctx))
+        args = [
+            *sam,
+            "deploy",
+            "--no-confirm-changeset",
+            "--no-fail-on-empty-changeset",
+        ]
 
         if stage != "default":
             args += ["--config-env", stage]
@@ -177,7 +182,7 @@ class LambdaTarget(DeployTarget):
 
     def delete(self, ctx: Context) -> None:
         sam = shell.require("sam", "pip install aws-sam-cli")
-        args = [sam, "delete", "--no-prompts", "--stack-name", self._stack(ctx)]
+        args = [*sam, "delete", "--no-prompts", "--stack-name", self._stack(ctx)]
         region = self._region(ctx)
 
         if region:

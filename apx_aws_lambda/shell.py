@@ -2,22 +2,32 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 from action_platform.core.exception import DeployError
 
+MODULES = {"aws": "awscli", "sam": "samcli"}
 
-def require(tool: str, hint: str) -> str:
+
+def require(tool: str, hint: str) -> list[str]:
+    """How to run `tool`: the binary on PATH, else the Python module the plugin depends on (`python -m awscli` / `python -m samcli`) — what makes the hosted platform work without the CLIs in its image."""
     path = shutil.which(tool)
 
-    if not path:
-        raise DeployError(f"{tool} is not installed: {hint}")
+    if path:
+        return [path]
 
-    return path
+    module = MODULES.get(tool)
+
+    if module and importlib.util.find_spec(module) is not None:
+        return [sys.executable, "-m", module]
+
+    raise DeployError(f"{tool} is not installed: {hint}")
 
 
 def run(
@@ -41,7 +51,12 @@ def aws(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> Any:
-    command = [require("aws", "https://aws.amazon.com/cli/"), *args, "--output", "json"]
+    command = [
+        *require("aws", "https://aws.amazon.com/cli/"),
+        *args,
+        "--output",
+        "json",
+    ]
 
     if region:
         command += ["--region", region]
