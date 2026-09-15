@@ -78,7 +78,7 @@ Resources:
       CodeUri: src/
       Handler: app.handler
       Runtime: python3.13
-      Timeout: 20
+      Timeout: 30
       MemorySize: 256
       FunctionUrlConfig:
         AuthType: NONE
