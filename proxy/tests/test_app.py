@@ -154,6 +154,30 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(other, 403)
         self.assertIn("may not deploy", refused["error"])
 
+    def test_credentials_wait_for_a_role_iam_has_not_propagated_yet(self):
+        self.rows["acme/shop/orders"] = {
+            "app": "acme/shop/orders",
+            "region": "us-east-1",
+            "subjects": ["org:acme"],
+        }
+        denied = self.app.ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "not authorized"}},
+            "AssumeRole",
+        )
+        granted = self.sts.assume_role.return_value
+        self.sts.assume_role.side_effect = [denied, denied, granted]
+
+        with mock.patch.object(self.app.time, "sleep") as sleep:
+            status, data = self.call(
+                "POST",
+                "/apps/acme/shop/orders/credentials",
+                {"sub": "org:acme:project:shop:app:orders", "organization": "acme"},
+            )
+
+        self.assertEqual((status, data["access_key_id"]), (200, "AKIA"))
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(self.sts.assume_role.call_count, 3)
+
     def test_grants_stay_inside_the_organization(self):
         self.rows["acme/shop/orders"] = {"app": "acme/shop/orders", "subjects": []}
         admin = {"sub": "org:acme", "organization": "acme", "scopes": ["org.manage"]}
