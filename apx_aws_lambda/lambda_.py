@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
-import tomllib
 
+import tomllib
 from action_platform.abc import DeployTarget
 from action_platform.core.context import Context, DeployResult, Diagnosis
 from action_platform.core.exception import DeployError

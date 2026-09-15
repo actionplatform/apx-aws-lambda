@@ -9,7 +9,7 @@ from unittest import mock
 from action_platform.core.context import Context
 from action_platform.core.exception import DeployError
 from action_platform.core.scaffold.templates import Matrix, with_plugin_clouds
-from action_platform.plugins import Loaded, PluginState, Plugins, registry
+from action_platform.plugins import Loaded, Plugins, PluginState, registry
 
 from apx_aws_lambda import AwsLambdaPlugin, shell
 from apx_aws_lambda.lambda_ import LambdaTarget

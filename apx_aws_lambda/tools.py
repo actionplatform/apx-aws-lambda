@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, Field
-
 from action_platform.mcp.annotations import READ_ONLY
+from pydantic import BaseModel, Field
 
 from apx_aws_lambda import shell
 
