@@ -18,22 +18,48 @@ Resources:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: ActionPlatformBoundary
-      Description: Caps every execution role the proxy creates; edit to widen or narrow what apps may do.
+      Description: Caps every execution role the proxy creates to resources named after the app (role tag action-platform:prefix); edit to widen or narrow what apps may do.
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
+          - Sid: Logs
+            Effect: Allow
             Action:
-              - logs:*
-              - lambda:InvokeFunction
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/lambda/${!aws:PrincipalTag/action-platform:prefix}*"
+          - Sid: Tracing
+            Effect: Allow
+            Action:
+              - xray:PutTraceSegments
+              - xray:PutTelemetryRecords
+            Resource: "*"
+          - Sid: OwnResources
+            Effect: Allow
+            Action:
               - s3:*
               - dynamodb:*
               - sqs:*
               - sns:*
+              - lambda:InvokeFunction
+            Resource:
+              - "arn:aws:s3:::${aws:PrincipalTag/action-platform:prefix}-*"
+              - "arn:aws:s3:::${aws:PrincipalTag/action-platform:prefix}-*/*"
+              - !Sub "arn:aws:dynamodb:*:${AWS::AccountId}:table/${!aws:PrincipalTag/action-platform:prefix}-*"
+              - !Sub "arn:aws:sqs:*:${AWS::AccountId}:${!aws:PrincipalTag/action-platform:prefix}-*"
+              - !Sub "arn:aws:sns:*:${AWS::AccountId}:${!aws:PrincipalTag/action-platform:prefix}-*"
+              - !Sub "arn:aws:lambda:*:${AWS::AccountId}:function:${!aws:PrincipalTag/action-platform:prefix}*"
+          - Sid: OwnSecrets
+            Effect: Allow
+            Action:
               - secretsmanager:GetSecretValue
-              - ssm:GetParameter*
-              - xray:Put*
-            Resource: "*"
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+            Resource:
+              - !Sub "arn:aws:secretsmanager:*:${AWS::AccountId}:secret:${!aws:PrincipalTag/action-platform:prefix}/*"
+              - !Sub "arn:aws:ssm:*:${AWS::AccountId}:parameter/${!aws:PrincipalTag/action-platform:prefix}/*"
 
   Table:
     Type: AWS::DynamoDB::Table
@@ -74,6 +100,7 @@ Resources:
             - Effect: Allow
               Action:
                 - iam:GetRole
+                - iam:UpdateAssumeRolePolicy
                 - iam:DeleteRole
                 - iam:PutRolePolicy
                 - iam:DeleteRolePolicy

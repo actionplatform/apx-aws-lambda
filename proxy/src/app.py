@@ -286,18 +286,22 @@ def ensure_role(
     managed: list[str] | None = None,
     inline: dict[str, dict] | None = None,
 ) -> str:
+    role_tags = [
+        {"Key": "action-platform:app", "Value": tags.key},
+        {"Key": "action-platform:prefix", "Value": tags.prefix},
+        {"Key": "action-platform:managed", "Value": "true"},
+    ]
+
     try:
         arn = iam.get_role(RoleName=name)["Role"]["Arn"]
         iam.update_assume_role_policy(RoleName=name, PolicyDocument=json.dumps(trust))
+        iam.tag_role(RoleName=name, Tags=role_tags)
     except iam.exceptions.NoSuchEntityException:
         kwargs: dict[str, Any] = {
             "RoleName": name,
             "Path": PATH,
             "AssumeRolePolicyDocument": json.dumps(trust),
-            "Tags": [
-                {"Key": "action-platform:app", "Value": tags.key},
-                {"Key": "action-platform:managed", "Value": "true"},
-            ],
+            "Tags": role_tags,
         }
 
         if boundary:
