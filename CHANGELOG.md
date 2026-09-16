@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.7 — 2026-09-16
+
+### Features
+- **target:** delete drops the stage's stack and, once no stage is left, the app on the proxy
+
+### Docs
+- destroy through the proxy
+
+### Tests
+- **target:** delete — other stage alive, last stage, no org.manage
+
 ## v0.3.6 — 2026-09-16
 
 ### Features
