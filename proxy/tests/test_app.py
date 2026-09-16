@@ -45,6 +45,7 @@ class ProxyTest(unittest.TestCase):
         table.put_item.side_effect = lambda Item: self.rows.__setitem__(
             Item["app"], Item
         )
+        table.delete_item.side_effect = lambda Key: self.rows.pop(Key["app"], None)
         table.update_item.side_effect = lambda Key, **kw: self.rows[
             Key["app"]
         ].__setitem__("subjects", kw["ExpressionAttributeValues"][":s"])
@@ -198,3 +199,45 @@ class ProxyTest(unittest.TestCase):
 
         self.assertEqual(status, 403)
         self.assertIn("serves organization", data["error"])
+
+
+@unittest.skipUnless(HAS_DEPS, "boto3 is not installed")
+class DeleteAppTest(ProxyTest):
+    def test_delete_drops_both_roles_and_forgets_the_app(self):
+        self.rows["acme/shop/orders"] = {"app": "acme/shop/orders", "subjects": []}
+        self.iam.list_attached_role_policies.return_value = {
+            "AttachedPolicies": [{"PolicyArn": "arn:aws:iam::aws:policy/x"}]
+        }
+        self.iam.list_role_policies.return_value = {"PolicyNames": ["deploy"]}
+
+        status, data = self.call(
+            "DELETE",
+            "/apps/acme/shop/orders",
+            {
+                "sub": "org:acme:user:u1",
+                "organization": "acme",
+                "scopes": ["org.manage"],
+            },
+        )
+
+        self.assertEqual((status, data["deleted"]), (200, True))
+        self.assertEqual(self.iam.delete_role.call_count, 2)
+        self.assertNotIn("acme/shop/orders", self.rows)
+
+    def test_delete_skips_a_role_already_gone_without_listing_it(self):
+        self.rows["acme/shop/orders"] = {"app": "acme/shop/orders", "subjects": []}
+        self.iam.get_role.side_effect = self.iam.exceptions.NoSuchEntityException()
+
+        status, _ = self.call(
+            "DELETE",
+            "/apps/acme/shop/orders",
+            {
+                "sub": "org:acme:user:u1",
+                "organization": "acme",
+                "scopes": ["org.manage"],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.iam.list_attached_role_policies.assert_not_called()
+        self.iam.delete_role.assert_not_called()
