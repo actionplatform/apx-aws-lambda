@@ -79,6 +79,8 @@ class LambdaTargetTest(unittest.TestCase):
                 "deploy",
                 "--no-confirm-changeset",
                 "--no-fail-on-empty-changeset",
+                "--stack-name",
+                "shop-prod",
                 "--config-env",
                 "prod",
             ],
