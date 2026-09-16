@@ -90,7 +90,7 @@ proxy_url = "https://xxxx.lambda-url.us-east-1.on.aws"
 app = "acme/shop/orders"
 ```
 
-`stack_name` in `samconfig.toml` must start with `ap-acme-shop-orders` — the deploy role reaches those stacks only, and the target refuses anything else before touching AWS.
+Through the proxy the stack is named `ap-acme-shop-orders-dev` / `-prod` — the deploy role reaches that prefix only, so the target sets `--stack-name` itself and `stack_name` in `samconfig.toml` is ignored; the repository never has to know the organization.
 
 **4.** `action-platform deploy`.
 
