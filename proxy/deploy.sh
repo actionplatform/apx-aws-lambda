@@ -52,21 +52,14 @@ cat <<MSG
 
 Proxy is up: $PROXY_URL
 
-In each app's platform.toml:
+On the platform: Plugins → AWS Lambda → Configure → Deploy proxy URL = $PROXY_URL
+Then deploy any app whose platform.toml says target = "aws/lambda": the first deploy by an
+organization manager registers the app here (its roles, granted to the app itself).
 
-[deploy]
-target = "aws/lambda"
-proxy_url = "$PROXY_URL"
-app = "$ORGANIZATION/<project>/<app>"
+From a machine instead (token with org.manage, audience $PROXY_URL):
 
-Create the app's roles and grant deploy (token with org.manage, audience $PROXY_URL):
-
-  TOKEN=\$(curl -s -X POST ${ISSUER_URL%/}/api/v1/identity/token \\
-    -H "Authorization: Bearer <platform token>" -H "content-type: application/json" \\
-    -d '{"audience":"$PROXY_URL"}' | jq -r .token)
-  curl -X POST -H "Authorization: Bearer \$TOKEN" $PROXY_URL/apps/$ORGANIZATION/<project>/<app>
-  curl -X PUT  -H "Authorization: Bearer \$TOKEN" $PROXY_URL/apps/$ORGANIZATION/<project>/<app>/grants \\
-    -H "content-type: application/json" -d '{"subjects":["org:$ORGANIZATION"]}'
+  action-platform aws-lambda proxy create $PROXY_URL $ORGANIZATION/<project>/<app>
+  action-platform aws-lambda proxy grant  $PROXY_URL $ORGANIZATION/<project>/<app> org:$ORGANIZATION
 
 stack_name in samconfig.toml must start with ap-$ORGANIZATION-<project>-<app>.
 MSG

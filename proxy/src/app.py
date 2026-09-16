@@ -24,6 +24,8 @@ VERSION = os.environ.get("PROXY_VERSION", "0.0.0")
 PATH = "/action-platform/"
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 MAX_DURATION = 3600
+ASSUME_ATTEMPTS = 6
+ASSUME_BACKOFF = 2.0
 MIN_DURATION = 900
 
 keys = Keys(f"{ISSUER}/.well-known/jwks.json")
@@ -395,6 +397,24 @@ def set_grants(claims: dict, body: dict, org: str, project: str, app: str) -> di
     return show_app(claims, {}, org, project, app)
 
 
+def assume_role(role_arn: str, session: str, duration: int) -> dict:
+    """IAM takes a few seconds to let a role just created be assumed; the first deploy of an app hits exactly that window."""
+    for attempt in range(ASSUME_ATTEMPTS):
+        try:
+            return sts.assume_role(
+                RoleArn=role_arn, RoleSessionName=session, DurationSeconds=duration
+            )["Credentials"]
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+
+            if code != "AccessDenied" or attempt == ASSUME_ATTEMPTS - 1:
+                raise
+
+            time.sleep(ASSUME_BACKOFF)
+
+    raise RuntimeError("unreachable")
+
+
 def credentials(claims: dict, body: dict, org: str, project: str, app: str) -> dict:
     target = App(org, project, app)
     row = table.get_item(Key={"app": target.key}).get("Item")
@@ -414,11 +434,7 @@ def credentials(claims: dict, body: dict, org: str, project: str, app: str) -> d
     duration = int(body.get("duration") or MIN_DURATION)
     duration = max(MIN_DURATION, min(MAX_DURATION, duration))
     session = re.sub(r"[^\w+=,.@-]", "-", claims.get("actor") or "platform")[:64]
-    creds = sts.assume_role(
-        RoleArn=target.role_arn("deploy"),
-        RoleSessionName=session,
-        DurationSeconds=duration,
-    )["Credentials"]
+    creds = assume_role(target.role_arn("deploy"), session, duration)
 
     return {
         "app": target.key,
