@@ -61,5 +61,5 @@ From a machine instead (token with org.manage, audience $PROXY_URL):
   action-platform aws-lambda proxy create $PROXY_URL $ORGANIZATION/<project>/<app>
   action-platform aws-lambda proxy grant  $PROXY_URL $ORGANIZATION/<project>/<app> org:$ORGANIZATION
 
-stack_name in samconfig.toml must start with ap-$ORGANIZATION-<project>-<app>.
+Stacks are named ap-$ORGANIZATION-<project>-<app>-<dev|prod>; the target sets --stack-name itself.
 MSG

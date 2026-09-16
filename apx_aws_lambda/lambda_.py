@@ -89,6 +89,12 @@ class LambdaTarget(DeployTarget):
         return tomllib.loads(path.read_text())
 
     def _stack(self, ctx: Context) -> str:
+        """The stack: `<prefix>-<stage>` when the proxy granted a prefix — the repository's samconfig.toml never has to know the organization — else samconfig.toml's `stack_name`."""
+        prefix = (self.env(ctx) or {}).get("AP_STACK_PREFIX")
+
+        if prefix:
+            return f"{prefix}-{'prod' if ctx.stage == 'prod' else 'dev'}"
+
         params = (
             self._samconfig(ctx)
             .get(self._stage(ctx), {})
@@ -138,15 +144,8 @@ class LambdaTarget(DeployTarget):
                 "template.yaml not found: apply the aws/lambda overlay first"
             )
 
-        stack = self._stack(ctx)
+        self._stack(ctx)
         env = self.env(ctx)
-        prefix = (env or {}).get("AP_STACK_PREFIX")
-
-        if prefix and not stack.startswith(prefix):
-            raise DeployError(
-                f"stack_name {stack!r} must start with {prefix!r}: the proxy grants deploy on that prefix only"
-            )
-
         shell.aws("sts", "get-caller-identity", region=self._region(ctx), env=env)
         shell.run(
             [*shell.require("sam", ""), "validate", "--lint"],
@@ -164,6 +163,8 @@ class LambdaTarget(DeployTarget):
             "deploy",
             "--no-confirm-changeset",
             "--no-fail-on-empty-changeset",
+            "--stack-name",
+            self._stack(ctx),
         ]
 
         if stage != "default":

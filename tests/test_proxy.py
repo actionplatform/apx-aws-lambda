@@ -207,24 +207,31 @@ class ProxyClientTest(unittest.TestCase):
         with self.assertRaises(DeployError):
             ProxyClient("https://proxy.test", "orders")
 
-    def test_the_target_refuses_a_stack_outside_the_prefix(self):
+    def test_the_stack_follows_the_prefix_the_proxy_granted(self):
         (self.root / "samconfig.toml").write_text(SAMCONFIG.format(stack="shop-dev"))
         (self.root / "template.yaml").write_text("Resources: {}\n")
         fake = FakeProxy({"POST /apps/acme/shop/orders/credentials": GRANTED})
         target = LambdaTarget(proxy_url="https://proxy.test", app="acme/shop/orders")
+        calls: list[list[str]] = []
+
+        def run(args, cwd=None, env=None):
+            calls.append(args)
+
+            return "{}"
 
         with (
             mock.patch("urllib.request.urlopen", fake),
             mock.patch.multiple(
-                shell,
-                run=lambda *a, **k: "{}",
-                require=lambda tool, hint: [f"/usr/bin/{tool}"],
+                shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
             ),
         ):
-            with self.assertRaises(DeployError) as caught:
-                target.preflight(self.ctx())
+            target.preflight(self.ctx())
+            target.deploy(self.ctx())
 
-        self.assertIn("must start with 'ap-acme-shop-orders'", str(caught.exception))
+        deploy = next(c for c in calls if c[1] == "deploy")
+        self.assertEqual(
+            deploy[deploy.index("--stack-name") + 1], "ap-acme-shop-orders-dev"
+        )
 
     def test_the_target_deploys_with_the_granted_credentials(self):
         (self.root / "samconfig.toml").write_text(
