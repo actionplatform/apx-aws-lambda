@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+from dataclasses import replace
 
 from action_platform.abc import DeployTarget
 from action_platform.core.context import Context, DeployResult, Diagnosis
@@ -13,7 +14,7 @@ from action_platform.core.exception import ActionPlatformError, DeployError
 from action_platform.remote.client import Remote
 
 from apx_aws_lambda import shell
-from apx_aws_lambda.proxy import ProxyClient
+from apx_aws_lambda.proxy import ProxyClient, ProxyRefused
 
 
 class LambdaTarget(DeployTarget):
@@ -233,14 +234,40 @@ class LambdaTarget(DeployTarget):
         )
 
     def delete(self, ctx: Context) -> None:
-        sam = shell.require("sam", "pip install aws-sam-cli")
-        args = [*sam, "delete", "--no-prompts", "--stack-name", self._stack(ctx)]
-        region = self._region(ctx)
+        """The stage's stack goes; once no stage is left, the app leaves the proxy too — its roles and grant — when the token may (`org.manage`)."""
+        if self.diagnose(ctx).status != "missing":
+            sam = shell.require("sam", "pip install aws-sam-cli")
+            args = [*sam, "delete", "--no-prompts", "--stack-name", self._stack(ctx)]
+            region = self._region(ctx)
 
-        if region:
-            args += ["--region", region]
+            if region:
+                args += ["--region", region]
 
-        shell.run(args, cwd=ctx.repo_root, env=self.env(ctx))
+            shell.run(args, cwd=ctx.repo_root, env=self.env(ctx))
+
+        proxy = self.proxy(ctx)
+
+        if proxy is None or self._other_stage_lives(ctx):
+            return
+
+        try:
+            proxy.delete(token=proxy.token(ctx))
+        except ProxyRefused as e:
+            if e.status == 404:
+                return
+
+            if e.status == 403:
+                raise DeployError(
+                    f"the stacks are gone but the proxy still knows {proxy.app} ({e.detail}): "
+                    "delete as an organization manager, or run `action-platform aws-lambda proxy delete`"
+                ) from e
+
+            raise
+
+    def _other_stage_lives(self, ctx: Context) -> bool:
+        other = replace(ctx, stage="dev" if ctx.stage == "prod" else "prod")
+
+        return self.diagnose(other).status != "missing"
 
     def _url(self, ctx: Context) -> str | None:
         try:
