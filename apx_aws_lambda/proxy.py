@@ -100,8 +100,8 @@ class ProxyClient:
     def show(self) -> dict:
         return self._call("GET", f"/apps/{self.app}", token=self.token())
 
-    def delete(self) -> dict:
-        return self._call("DELETE", f"/apps/{self.app}", token=self.token())
+    def delete(self, token: str | None = None) -> dict:
+        return self._call("DELETE", f"/apps/{self.app}", token=token or self.token())
 
     def grant(self, subjects: list[str]) -> dict:
         return self._call(

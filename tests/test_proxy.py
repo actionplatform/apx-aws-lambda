@@ -58,7 +58,7 @@ class FakeProxy:
         )
 
 
-class ProxyClientTest(unittest.TestCase):
+class ProxyCase(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -72,6 +72,8 @@ class ProxyClientTest(unittest.TestCase):
             identity=(lambda audience: f"{token}:{audience}") if token else None,
         )
 
+
+class ProxyClientTest(ProxyCase):
     def test_env_carries_credentials_from_the_grant(self):
         fake = FakeProxy({"POST /apps/acme/shop/orders/credentials": GRANTED})
 
@@ -268,3 +270,93 @@ class ProxyClientTest(unittest.TestCase):
                 "ExecutionRoleArn=arn:aws:iam::1:role/action-platform/ap-exec-acme-shop-orders",
             ],
         )
+
+
+class DeleteTest(ProxyCase):
+    def run_with(self, live: set[str]):
+        calls: list[list[str]] = []
+
+        def run(args, cwd=None, env=None):
+            calls.append(args)
+
+            if args[1:3] == ["cloudformation", "describe-stacks"]:
+                stack = args[args.index("--stack-name") + 1]
+
+                if stack not in live:
+                    raise DeployError("does not exist")
+
+                return json.dumps({"Stacks": [{"StackStatus": "UPDATE_COMPLETE"}]})
+
+            if args[1] == "delete":
+                live.discard(args[args.index("--stack-name") + 1])
+
+            return "{}"
+
+        return calls, run
+
+    def test_delete_drops_the_stage_and_leaves_the_proxy_while_another_stage_lives(
+        self,
+    ):
+        (self.root / "samconfig.toml").write_text(SAMCONFIG.format(stack="x"))
+        fake = FakeProxy({"POST /apps/acme/shop/orders/credentials": GRANTED})
+        target = LambdaTarget(proxy_url="https://proxy.test", app="acme/shop/orders")
+        calls, run = self.run_with(
+            {"ap-acme-shop-orders-dev", "ap-acme-shop-orders-prod"}
+        )
+
+        with (
+            mock.patch("urllib.request.urlopen", fake),
+            mock.patch.multiple(
+                shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
+            ),
+        ):
+            target.delete(self.ctx())
+
+        deleted = next(c for c in calls if c[1] == "delete")
+        self.assertEqual(
+            deleted[deleted.index("--stack-name") + 1], "ap-acme-shop-orders-dev"
+        )
+        self.assertNotIn("DELETE", [r[0] for r in fake.requests])
+
+    def test_delete_of_the_last_stage_deregisters_the_app(self):
+        (self.root / "samconfig.toml").write_text(SAMCONFIG.format(stack="x"))
+        fake = FakeProxy(
+            {
+                "POST /apps/acme/shop/orders/credentials": GRANTED,
+                "DELETE /apps/acme/shop/orders": {"deleted": True},
+            }
+        )
+        target = LambdaTarget(proxy_url="https://proxy.test", app="acme/shop/orders")
+        calls, run = self.run_with({"ap-acme-shop-orders-dev"})
+
+        with (
+            mock.patch("urllib.request.urlopen", fake),
+            mock.patch.multiple(
+                shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
+            ),
+        ):
+            target.delete(self.ctx())
+
+        self.assertEqual(
+            [r[:2] for r in fake.requests if r[0] == "DELETE"],
+            [("DELETE", "/apps/acme/shop/orders")],
+        )
+        self.assertEqual(len([c for c in calls if c[1] == "delete"]), 1)
+
+    def test_delete_without_org_manage_says_who_can_finish(self):
+        (self.root / "samconfig.toml").write_text(SAMCONFIG.format(stack="x"))
+        fake = FakeProxy({"POST /apps/acme/shop/orders/credentials": GRANTED})
+        target = LambdaTarget(proxy_url="https://proxy.test", app="acme/shop/orders")
+        calls, run = self.run_with(set())
+
+        with (
+            mock.patch("urllib.request.urlopen", fake),
+            mock.patch.multiple(
+                shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
+            ),
+        ):
+            with self.assertRaises(DeployError) as caught:
+                target.delete(self.ctx())
+
+        self.assertIn("organization manager", str(caught.exception))
+        self.assertEqual([c for c in calls if c[1] == "delete"], [])
