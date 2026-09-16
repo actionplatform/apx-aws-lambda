@@ -27,7 +27,7 @@ action-platform diagnose
 
 | | |
 |---|---|
-| Overlay | `template.yaml`, `samconfig.toml`, `lambda_handler.py`, `Makefile`, `requirements/` (IAM examples), `.github/workflows/deploy.yml` (optional) |
+| Overlay | `template.yaml`, `samconfig.toml`, `Makefile` and the language's entry point — `lambda_handler.py` (Mangum) for Python, `run.sh` behind the Lambda Web Adapter layer for Node and Spring (Java, Kotlin), `cmd/lambda/main.go` (`-tags lambda`) for Go, `lambda_handler.rb` (a Rack call, no server) for Ruby —, `requirements/` (IAM examples), `.github/workflows/deploy.yml` (optional). Every `web/*` template of the official repository deploys; the health route is `/health` (API Gateway keeps `/ping` for itself on `execute-api`) |
 | Deploy | `sam build` + `sam deploy --config-env <stage>` (`dev` → `default`, `prod` → `prod`) |
 | Rollback | CloudFormation `rollback-stack` — previous stack state |
 | Diagnose | stack status and the HTTP API url |
