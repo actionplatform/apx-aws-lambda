@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.3.8 — 2026-09-16
+
+### Breaking Changes
+- **overlay:** aws/lambda for every web language — Node and Spring through the Lambda Web Adapter, Go through aws-lambda-go-api-proxy, Ruby through a Rack call; per-language template.yaml and Makefile
+
+### Bug Fixes
+- **proxy:** deleting an app whose role is already gone — look with GetRole first, and let the function list a path-less role name
+
+### Docs
+- the overlay per language
+
+### Tests
+- **proxy:** delete drops both roles, skips one already gone
+
 ## v0.3.7 — 2026-09-16
 
 ### Features
