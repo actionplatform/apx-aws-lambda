@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.3.6 — 2026-09-16
+
+### Features
+- **target:** the stack is named from the prefix the proxy granted — samconfig.toml's stack_name is not the organization's business
+
+### Bug Fixes
+- **proxy:** retry AssumeRole while IAM propagates a role just created — the first deploy of an app
+
+### Docs
+- stack name through the proxy
+- **proxy:** deploy.sh points at Plugins → AWS Lambda; the first deploy registers the app
+
+### Tests
+- **target:** --stack-name follows the granted prefix
+- **proxy:** credentials wait for the role
+
 ## v0.3.5 — 2026-09-15
 
 ### Features
