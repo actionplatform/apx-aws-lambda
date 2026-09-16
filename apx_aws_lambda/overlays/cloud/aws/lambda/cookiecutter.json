@@ -4,7 +4,12 @@
   "github_owner": "actionplatform",
   "package_name": "{{ cookiecutter.project_slug|replace('-', '_') }}",
   "language": [
-    "python"
+    "python",
+    "node",
+    "go",
+    "java",
+    "kotlin",
+    "ruby"
   ],
   "type": [
     "web"

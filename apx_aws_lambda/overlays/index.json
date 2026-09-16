@@ -7,7 +7,12 @@
         "web"
       ],
       "languages": [
-        "python"
+        "python",
+        "node",
+        "go",
+        "java",
+        "kotlin",
+        "ruby"
       ]
     }
   ]
