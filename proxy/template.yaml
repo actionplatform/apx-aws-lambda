@@ -98,7 +98,10 @@ Resources:
               Action: sts:AssumeRole
               Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/action-platform/ap-deploy-*
             - Effect: Allow
-              Action: iam:GetRole
+              Action:
+                - iam:GetRole
+                - iam:ListAttachedRolePolicies
+                - iam:ListRolePolicies
               Resource:
                 - !Sub arn:aws:iam::${AWS::AccountId}:role/ap-deploy-*
                 - !Sub arn:aws:iam::${AWS::AccountId}:role/ap-exec-*

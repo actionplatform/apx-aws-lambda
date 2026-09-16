@@ -357,10 +357,13 @@ def delete_app(claims: dict, body: dict, org: str, project: str, app: str) -> di
 
 
 def drop_role(name: str) -> None:
+    """A role that is already gone is evaluated without its path by IAM, where the function may only look — so look first, then touch."""
     try:
-        attached = iam.list_attached_role_policies(RoleName=name)["AttachedPolicies"]
+        iam.get_role(RoleName=name)
     except iam.exceptions.NoSuchEntityException:
         return
+
+    attached = iam.list_attached_role_policies(RoleName=name)["AttachedPolicies"]
 
     for policy in attached:
         iam.detach_role_policy(RoleName=name, PolicyArn=policy["PolicyArn"])
