@@ -31,7 +31,7 @@ action-platform diagnose
 | Deploy | `sam build` + `sam deploy --config-env <stage>` (`dev` → `default`, `prod` → `prod`) |
 | Rollback | CloudFormation `rollback-stack` — previous stack state |
 | Diagnose | stack status and the HTTP API url |
-| Destroy | `sam delete` |
+| Destroy | `sam delete` of the stage's stack; when no stage is left, the app leaves the proxy too (roles and grant) — the token must carry `org.manage`, which a platform deploy by an organization manager does |
 | Tools | `aws_lambda_stacks`, `aws_lambda_functions` |
 | Commands | `action-platform aws-lambda stacks\|functions`, `action-platform aws-lambda proxy …` |
 
