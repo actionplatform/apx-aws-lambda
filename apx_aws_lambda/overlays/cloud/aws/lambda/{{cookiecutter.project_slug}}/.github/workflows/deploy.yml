@@ -45,13 +45,18 @@ jobs:
           role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
 
+      - uses: actionplatform/ci-github/setup@v1
+        if: steps.gate.outputs.ready == 'true'
+        with:
+          install: "false"
+
       - uses: actions/setup-python@v6
         if: steps.gate.outputs.ready == 'true'
         with:
           python-version: "3.12"
 
       - if: steps.gate.outputs.ready == 'true'
-        run: pip install "poetry>=1.8.0" poetry-plugin-export aws-sam-cli
+        run: pip install aws-sam-cli
 
       - if: steps.gate.outputs.ready == 'true'
         run: sam build
