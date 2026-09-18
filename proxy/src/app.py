@@ -21,6 +21,8 @@ SAM_BUCKET = "aws-sam-cli-managed-default"
 BOUNDARY_ARN = os.environ.get("BOUNDARY_ARN", "")
 ACCOUNT_ID = os.environ.get("ACCOUNT_ID", "")
 VERSION = os.environ.get("PROXY_VERSION", "0.0.0")
+POLICY_VERSION = 2
+PUBLIC_LAYERS = [("753240598075", "LambdaAdapterLayer*")]
 PATH = "/action-platform/"
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 MAX_DURATION = 3600
@@ -104,6 +106,14 @@ class App:
                     "Resource": [
                         f"arn:aws:lambda:{region}:{ACCOUNT_ID}:function:{self.prefix}*",
                         f"arn:aws:lambda:{region}:{ACCOUNT_ID}:layer:{self.prefix}*",
+                    ],
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": ["lambda:GetLayerVersion"],
+                    "Resource": [
+                        f"arn:aws:lambda:{region}:{account}:layer:{layer}:*"
+                        for account, layer in PUBLIC_LAYERS
                     ],
                 },
                 {
@@ -277,6 +287,7 @@ def create_app(claims: dict, body: dict, org: str, project: str, app: str) -> di
             "subjects": row.get("subjects") or [target.subject],
             "created_at": row.get("created_at") or int(time.time()),
             "created_by": row.get("created_by") or claims.get("actor") or claims["sub"],
+            "policy": POLICY_VERSION,
         }
     )
 
@@ -323,6 +334,16 @@ def ensure_role(
         )
 
     return arn
+
+
+def refresh_policy(target: App, row: dict) -> None:
+    region = row.get("region") or os.environ.get("AWS_REGION", "us-east-1")
+    iam.put_role_policy(
+        RoleName=target.role_name("deploy"),
+        PolicyName="deploy",
+        PolicyDocument=json.dumps(target.deploy_policy(region)),
+    )
+    table.put_item(Item={**row, "policy": POLICY_VERSION})
 
 
 def show_app(claims: dict, body: dict, org: str, project: str, app: str) -> dict:
@@ -433,6 +454,9 @@ def credentials(claims: dict, body: dict, org: str, project: str, app: str) -> d
 
     if not granted:
         raise Refused(403, f"{sub} may not deploy {target.key}")
+
+    if int(row.get("policy") or 0) < POLICY_VERSION:
+        refresh_policy(target, row)
 
     duration = int(body.get("duration") or MIN_DURATION)
     duration = max(MIN_DURATION, min(MAX_DURATION, duration))
