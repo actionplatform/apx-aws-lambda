@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.9 — 2026-09-18
+
+### Bug Fixes
+- **lambda:** a stack left in ROLLBACK_COMPLETE is deleted before the deploy
+- **overlay:** the Ruby recipe drives bundler by environment and leaves the project untouched; the handler passes rubocop and loads its gems through bundler/setup
+- **overlay:** the Ruby package leaves puma and rackup out — no native extension, no compiler on the build host
+
 ## v0.3.8 — 2026-09-16
 
 ### Breaking Changes
