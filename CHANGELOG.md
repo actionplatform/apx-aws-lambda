@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.10 — 2026-09-18
+
+### Bug Fixes
+- **proxy:** the deploy role may read the public Lambda Web Adapter layer
+
 ## v0.3.9 — 2026-09-18
 
 ### Bug Fixes
