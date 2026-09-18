@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from action_platform.core.exception import DeployError
+from action_platform.core.process import stream
 
 MODULES = {"aws": "awscli", "sam": "samcli"}
 
@@ -42,6 +43,17 @@ def module_env(env: dict[str, str] | None) -> dict[str, str]:
 def run(
     args: list[str], cwd: Path | None = None, env: dict[str, str] | None = None
 ) -> str:
+    """`sam` streams: every line goes to whoever follows the job as it appears. `aws` answers JSON and is read whole."""
+    if Path(args[0]).name == "sam" or (len(args) > 2 and args[2] == "samcli"):
+        result = stream(args, cwd=cwd, env=module_env(env))
+
+        if not result.ok:
+            raise DeployError(
+                f"{' '.join(args[:2])} failed: {result.output.strip()[-2000:]}"
+            )
+
+        return result.output
+
     result = subprocess.run(
         args,
         cwd=cwd,
