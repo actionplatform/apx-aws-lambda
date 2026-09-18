@@ -149,6 +149,10 @@ class ProxyTest(unittest.TestCase):
             (200, "AKIA", "ap-acme-shop-orders"),
         )
         self.assertEqual(
+            data["deploy_role"],
+            "arn:aws:iam::1:role/action-platform/ap-deploy-acme-shop-orders",
+        )
+        self.assertEqual(
             self.sts.assume_role.call_args.kwargs["RoleArn"],
             "arn:aws:iam::1:role/action-platform/ap-deploy-acme-shop-orders",
         )
@@ -164,6 +168,15 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(
             layers[0]["Resource"],
             ["arn:aws:lambda:us-east-1:753240598075:layer:LambdaAdapterLayer*:*"],
+        )
+        simulate = [
+            s
+            for s in policy["Statement"]
+            if "iam:SimulatePrincipalPolicy" in s["Action"]
+        ]
+        self.assertEqual(
+            simulate[0]["Resource"],
+            ["arn:aws:iam::1:role/action-platform/ap-deploy-acme-shop-orders"],
         )
 
     def test_credentials_refresh_the_policy_of_an_app_registered_by_an_older_proxy(

@@ -144,6 +144,113 @@ class LambdaTargetTest(unittest.TestCase):
             ["aws", "cloudformation", "delete-stack"], [c[:3] for c in self.calls]
         )
 
+    def test_readiness_reports_credentials_state_permissions_and_template(self):
+        (self.root / "template.yaml").write_text(
+            "Resources:\n  Fn:\n    Properties:\n      Layers:\n"
+            "        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:25\n"
+        )
+        target = LambdaTarget(region="us-east-1")
+        target._env = {
+            "AP_DEPLOY_ROLE": "arn:aws:iam::1:role/action-platform/ap-deploy-x",
+            "AP_EXECUTION_ROLE": "arn:aws:iam::1:role/action-platform/ap-exec-x",
+            "AP_STACK_PREFIX": "ap-x",
+        }
+        simulated: list[list[str]] = []
+
+        def run(args, cwd=None, env=None):
+            self.calls.append([Path(args[0]).name, *args[1:]])
+            key = " ".join(args[1:3])
+
+            if key == "sts get-caller-identity":
+                return json.dumps(
+                    {"Account": "1", "Arn": "arn:aws:sts::1:assumed-role/ap-deploy-x/p"}
+                )
+
+            if key == "cloudformation describe-stacks":
+                return json.dumps({"Stacks": [{"StackStatus": "UPDATE_COMPLETE"}]})
+
+            if key == "iam simulate-principal-policy":
+                simulated.append(args)
+                actions = args[
+                    args.index("--action-names") + 1 : args.index("--resource-arns")
+                ]
+                resources = args[
+                    args.index("--resource-arns") + 1 : args.index("--output")
+                ]
+
+                return json.dumps(
+                    {
+                        "EvaluationResults": [
+                            {
+                                "EvalActionName": a,
+                                "EvalResourceName": r,
+                                "EvalDecision": "implicitDeny"
+                                if a == "lambda:GetLayerVersion"
+                                else "allowed",
+                            }
+                            for a in actions
+                            for r in resources
+                        ]
+                    }
+                )
+
+            return "{}"
+
+        with mock.patch.multiple(
+            shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
+        ):
+            checks = {c.id: c for c in target.readiness(self.ctx("prod"))}
+
+        self.assertTrue(checks["aws.credentials"].ok)
+        self.assertEqual(checks["stack.name"].detail, "ap-x-prod")
+        self.assertTrue(checks["stack.state"].ok)
+        self.assertFalse(checks["aws.permissions"].ok)
+        self.assertIn("lambda:GetLayerVersion", checks["aws.permissions"].detail)
+        self.assertIn("LambdaAdapterLayerArm64:25", checks["aws.permissions"].detail)
+        self.assertTrue(checks["template.valid"].ok)
+        self.assertTrue(
+            any("iam:PassRole" in args for args in simulated),
+            "the execution role's PassRole is simulated",
+        )
+        self.assertNotIn(["sam", "build"], [c[:2] for c in self.calls])
+
+    def test_readiness_flags_a_stack_with_an_operation_in_progress(self):
+        target = LambdaTarget(region="us-east-1")
+
+        with self.fake(
+            {
+                "sts get-caller-identity": {
+                    "Account": "1",
+                    "Arn": "arn:aws:iam::1:user/me",
+                },
+                "cloudformation describe-stacks": {
+                    "Stacks": [{"StackStatus": "UPDATE_IN_PROGRESS"}]
+                },
+            }
+        ):
+            checks = {c.id: c for c in target.readiness(self.ctx("dev"))}
+
+        self.assertFalse(checks["stack.state"].ok)
+        self.assertIn("UPDATE_IN_PROGRESS", checks["stack.state"].detail)
+        self.assertNotIn("aws.permissions", checks)
+
+    def test_readiness_without_credentials_stops_there(self):
+        target = LambdaTarget(region="us-east-1")
+
+        def run(args, cwd=None, env=None):
+            if " ".join(args[1:3]) == "sts get-caller-identity":
+                raise DeployError("aws sts failed: Unable to locate credentials")
+
+            return "{}"
+
+        with mock.patch.multiple(
+            shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
+        ):
+            checks = target.readiness(self.ctx("dev"))
+
+        self.assertEqual(checks[-1].id, "aws.credentials")
+        self.assertFalse(checks[-1].ok)
+
     def test_diagnose_reads_the_stack(self):
         with self.fake(
             {

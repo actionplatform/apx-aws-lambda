@@ -120,6 +120,7 @@ class ProxyClient:
             "AWS_SESSION_TOKEN": data["session_token"],
             "AP_STACK_PREFIX": data.get("stack_prefix", ""),
             "AP_EXECUTION_ROLE": data.get("execution_role", ""),
+            "AP_DEPLOY_ROLE": data.get("deploy_role", ""),
         }
 
     def _call(
