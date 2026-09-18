@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.11 — 2026-09-18
+
+### Features
+- **readiness:** aws/lambda says whether a release can reach a stage before the deploy — tooling, overlay, stack name, credentials, stack state, permissions simulated against the deploy role, `sam validate --lint`
+- **proxy:** the deploy role may simulate its own policy (policy version 3, refreshed on the next credentials request); `credentials` answers `deploy_role`
+
 ## v0.3.10 — 2026-09-18
 
 ### Bug Fixes
