@@ -158,9 +158,7 @@ class ProxyTest(unittest.TestCase):
     def test_deploy_policy_reads_the_public_web_adapter_layer(self):
         policy = self.app.App("acme", "shop", "orders").deploy_policy("us-east-1")
         layers = [
-            s
-            for s in policy["Statement"]
-            if s["Action"] == ["lambda:GetLayerVersion"]
+            s for s in policy["Statement"] if s["Action"] == ["lambda:GetLayerVersion"]
         ]
 
         self.assertEqual(
