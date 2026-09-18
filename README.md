@@ -28,7 +28,8 @@ action-platform diagnose
 | | |
 |---|---|
 | Overlay | `template.yaml`, `samconfig.toml`, `Makefile` and the language's entry point — `lambda_handler.py` (Mangum) for Python, `run.sh` behind the Lambda Web Adapter layer for Node and Spring (Java, Kotlin), `cmd/lambda/main.go` (`-tags lambda`) for Go, `lambda_handler.rb` (a Rack call, no server) for Ruby —, `requirements/` (IAM examples), `.github/workflows/deploy.yml` (optional). Every `web/*` template of the official repository deploys; the health route is `/health` (API Gateway keeps `/ping` for itself on `execute-api`) |
-| Deploy | `sam build` + `sam deploy --config-env <stage>` (`dev` → `default`, `prod` → `prod`) |
+| Readiness | before a deploy, without building or changing anything: the tooling is there, the overlay is applied, the stack name resolves, the credentials work, the stack is not mid-operation or failed (a `ROLLBACK_COMPLETE` first creation is a warning — the deploy deletes it), the deploy role may do what the template needs (simulated with `iam:SimulatePrincipalPolicy` against the stack, the function, its log group, the execution role and every public layer the template references — the Lambda Web Adapter's, for one) and `sam validate --lint` passes. The platform runs it after every release for `dev` and `prod` and refuses a blocked deploy unless forced; `action-platform readiness` runs it on a machine |
+| Deploy | `sam build` + `sam deploy --config-env <stage>` (`dev` → `default`, `prod` → `prod`); a stack left in `ROLLBACK_COMPLETE` by a failed first creation is deleted first |
 | Rollback | CloudFormation `rollback-stack` — previous stack state |
 | Diagnose | stack status and the HTTP API url |
 | Destroy | `sam delete` of the stage's stack; when no stage is left, the app leaves the proxy too (roles and grant) — the token must carry `org.manage`, which a platform deploy by an organization manager does |
@@ -158,10 +159,12 @@ Parameters: `IssuerUrl` (the platform's public url), `Organization` (one proxy s
 
 | Role | Trust | Policy |
 |---|---|---|
-| `ap-deploy-<org>-<project>-<app>` | the proxy's function role | CloudFormation on stacks `ap-<org>-<project>-<app>*`; Lambda, API Gateway and logs with the same prefix; `iam:PassRole` on the execution role; SAM's managed bucket |
+| `ap-deploy-<org>-<project>-<app>` | the proxy's function role | CloudFormation on stacks `ap-<org>-<project>-<app>*`; Lambda, API Gateway and logs with the same prefix; `lambda:GetLayerVersion` on the public Lambda Web Adapter layers (account `753240598075`); `iam:PassRole` on the execution role; `iam:SimulatePrincipalPolicy` on itself, for readiness; SAM's managed bucket |
 | `ap-exec-<org>-<project>-<app>` | `lambda.amazonaws.com` | `AWSLambdaBasicExecutionRole` + the boundary |
 
 Both live under `/action-platform/`, carry tags `action-platform:app` and `action-platform:prefix`, and are idempotent: `create` again syncs trust policies, tags and policies without duplicating anything. `delete` removes both and the grants.
+
+The deploy policy carries a version. An app registered by an older proxy gets its policy rewritten the first time it asks for credentials after the proxy was redeployed, so a wider policy reaches existing apps without re-registering them.
 
 ### The boundary
 
@@ -182,7 +185,7 @@ POST   /apps/{org}/{project}/{app}               create both roles; body {"regio
 GET    /apps/{org}/{project}/{app}               roles and grants                             org.manage
 DELETE /apps/{org}/{project}/{app}               delete roles and grants                      org.manage
 PUT    /apps/{org}/{project}/{app}/grants        {"subjects": ["org:acme", …]}               org.manage
-POST   /apps/{org}/{project}/{app}/credentials   {"duration": 900..3600} → temporary credentials   a grant
+POST   /apps/{org}/{project}/{app}/credentials   {"duration": 900..3600} → temporary credentials, stack_prefix, execution_role, deploy_role   a grant
 ```
 
 Every call except `/health` carries `Authorization: Bearer <platform token>` with `aud` = the proxy url. The proxy checks the signature against the issuer's JWKS, `iss`, `aud`, expiry, and that `organization` is the one it serves. Admin calls need `org.manage` in the token's `scopes`; deploy-job tokens carry no scopes, so a compromised worker cannot widen a grant. `credentials` needs the token's `sub` to start with one of the app's granted subject prefixes.

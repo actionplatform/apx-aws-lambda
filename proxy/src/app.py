@@ -21,7 +21,7 @@ SAM_BUCKET = "aws-sam-cli-managed-default"
 BOUNDARY_ARN = os.environ.get("BOUNDARY_ARN", "")
 ACCOUNT_ID = os.environ.get("ACCOUNT_ID", "")
 VERSION = os.environ.get("PROXY_VERSION", "0.0.0")
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 PUBLIC_LAYERS = [("753240598075", "LambdaAdapterLayer*")]
 PATH = "/action-platform/"
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -132,6 +132,11 @@ class App:
                     "Effect": "Allow",
                     "Action": ["iam:PassRole", "iam:GetRole"],
                     "Resource": [self.role_arn("exec")],
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": ["iam:GetRole", "iam:SimulatePrincipalPolicy"],
+                    "Resource": [self.role_arn("deploy")],
                 },
                 {
                     "Effect": "Allow",
@@ -468,6 +473,7 @@ def credentials(claims: dict, body: dict, org: str, project: str, app: str) -> d
         "region": row.get("region"),
         "stack_prefix": target.prefix,
         "execution_role": target.role_arn("exec"),
+        "deploy_role": target.role_arn("deploy"),
         "access_key_id": creds["AccessKeyId"],
         "secret_access_key": creds["SecretAccessKey"],
         "session_token": creds["SessionToken"],

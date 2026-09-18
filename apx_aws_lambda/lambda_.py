@@ -5,11 +5,12 @@ Credentials, in order: `proxy_url` + `app` under `[deploy]` — the deploy proxy
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import replace
 
 from action_platform.abc import DeployTarget
-from action_platform.core.context import Context, DeployResult, Diagnosis
+from action_platform.core.context import Check, Context, DeployResult, Diagnosis
 from action_platform.core.exception import ActionPlatformError, DeployError
 from action_platform.logging import logger
 from action_platform.remote.client import Remote
@@ -154,6 +155,196 @@ class LambdaTarget(DeployTarget):
             cwd=ctx.repo_root,
             env=self.env(ctx),
         )
+
+    def readiness(self, ctx: Context) -> list[Check]:
+        checks: list[Check] = []
+
+        for tool, hint in (
+            ("sam", "pip install aws-sam-cli"),
+            ("aws", "https://aws.amazon.com/cli/"),
+        ):
+            try:
+                shell.require(tool, hint)
+                checks.append(Check(f"tool.{tool}", True, "installed"))
+            except DeployError as e:
+                checks.append(Check(f"tool.{tool}", False, str(e), fix=hint))
+
+        if not (ctx.repo_root / "template.yaml").exists():
+            checks.append(
+                Check(
+                    "template.present",
+                    False,
+                    "template.yaml not found",
+                    fix="apply the aws/lambda overlay: action-platform cloud set aws/lambda",
+                )
+            )
+
+            return checks
+
+        try:
+            stack = self._stack(ctx)
+            checks.append(Check("stack.name", True, stack))
+        except DeployError as e:
+            checks.append(Check("stack.name", False, str(e), fix="fill samconfig.toml"))
+
+            return checks
+
+        try:
+            env = self.env(ctx)
+            identity = shell.aws(
+                "sts", "get-caller-identity", region=self._region(ctx), env=env
+            )
+            checks.append(
+                Check("aws.credentials", True, identity.get("Arn", "credentials work"))
+            )
+        except (DeployError, ProxyRefused) as e:
+            checks.append(
+                Check(
+                    "aws.credentials",
+                    False,
+                    str(e),
+                    fix="connect the deploy proxy or a role for this app in the AWS Lambda plugin",
+                )
+            )
+
+            return checks
+
+        checks.append(self._stack_state(ctx))
+        checks.extend(self._permissions(ctx, env, identity, stack))
+        checks.append(self._template_valid(ctx, env))
+
+        return checks
+
+    def _stack_state(self, ctx: Context) -> Check:
+        status = self._status(ctx)
+
+        if status is None:
+            return Check("stack.state", True, "no stack yet; the deploy creates it")
+
+        if status == "ROLLBACK_COMPLETE":
+            return Check(
+                "stack.state",
+                True,
+                f"{status}: the failed first creation is deleted before the deploy",
+                severity="warning",
+            )
+
+        if status.endswith("_IN_PROGRESS"):
+            return Check(
+                "stack.state",
+                False,
+                f"{status}: another operation is running on the stack",
+                fix="wait for it to finish, or cancel it in CloudFormation",
+            )
+
+        if status.endswith("_FAILED"):
+            return Check(
+                "stack.state",
+                False,
+                status,
+                fix="the stack needs attention in CloudFormation before a deploy can update it",
+            )
+
+        return Check("stack.state", True, status)
+
+    def _permissions(
+        self, ctx: Context, env: dict[str, str] | None, identity: dict, stack: str
+    ) -> list[Check]:
+        role = (env or {}).get("AP_DEPLOY_ROLE") or _role_of(identity.get("Arn", ""))
+
+        if not role:
+            return []
+
+        account = identity.get("Account", "")
+        region = self._region(ctx) or "us-east-1"
+        wanted: list[tuple[list[str], list[str]]] = [
+            (
+                ["cloudformation:CreateChangeSet", "cloudformation:DescribeStacks"],
+                [f"arn:aws:cloudformation:{region}:{account}:stack/{stack}/*"],
+            ),
+            (
+                ["lambda:CreateFunction", "lambda:UpdateFunctionCode"],
+                [f"arn:aws:lambda:{region}:{account}:function:{stack}-ApiFunction"],
+            ),
+            (
+                ["logs:CreateLogGroup"],
+                [
+                    f"arn:aws:logs:{region}:{account}:log-group:/aws/lambda/{stack}-ApiFunction"
+                ],
+            ),
+        ]
+        layers = self._layers(ctx, region)
+
+        if layers:
+            wanted.append((["lambda:GetLayerVersion"], layers))
+
+        execution = (env or {}).get("AP_EXECUTION_ROLE")
+
+        if execution:
+            wanted.append((["iam:PassRole"], [execution]))
+
+        denied: list[str] = []
+
+        for actions, resources in wanted:
+            try:
+                data = shell.aws(
+                    "iam",
+                    "simulate-principal-policy",
+                    "--policy-source-arn",
+                    role,
+                    "--action-names",
+                    *actions,
+                    "--resource-arns",
+                    *resources,
+                    env=env,
+                )
+            except DeployError as e:
+                return [
+                    Check(
+                        "aws.permissions",
+                        True,
+                        f"not simulated: {str(e)[:200]}",
+                        severity="warning",
+                    )
+                ]
+
+            for row in data.get("EvaluationResults") or []:
+                if row.get("EvalDecision") != "allowed":
+                    denied.append(
+                        f"{row.get('EvalActionName')} on {row.get('EvalResourceName')}"
+                    )
+
+        if denied:
+            return [
+                Check(
+                    "aws.permissions",
+                    False,
+                    f"{role} may not: " + "; ".join(denied),
+                    fix="widen the deploy role's policy (redeploy the deploy proxy when it created the role)",
+                )
+            ]
+
+        return [Check("aws.permissions", True, f"{role} may deploy {stack}")]
+
+    def _layers(self, ctx: Context, region: str) -> list[str]:
+        text = (ctx.repo_root / "template.yaml").read_text(errors="replace")
+        text = text.replace("${AWS::Region}", region)
+
+        return sorted(
+            set(re.findall(r"arn:aws:lambda:[\w-]+:\d{12}:layer:[\w-]+:\d+", text))
+        )
+
+    def _template_valid(self, ctx: Context, env: dict[str, str] | None) -> Check:
+        try:
+            shell.run(
+                [*shell.require("sam", ""), "validate", "--lint"],
+                cwd=ctx.repo_root,
+                env=env,
+            )
+        except DeployError as e:
+            return Check("template.valid", False, str(e), fix="fix template.yaml")
+
+        return Check("template.valid", True, "sam validate --lint passes")
 
     def _status(self, ctx: Context) -> str | None:
         """The stack's CloudFormation status, or None when there is no stack."""
@@ -323,6 +514,12 @@ class LambdaTarget(DeployTarget):
             return self.diagnose(ctx).url
         except DeployError:
             return None
+
+
+def _role_of(arn: str) -> str | None:
+    found = re.match(r"^arn:aws:sts::(\d+):assumed-role/([^/]+)/", arn)
+
+    return f"arn:aws:iam::{found.group(1)}:role/{found.group(2)}" if found else None
 
 
 def assume_role(
