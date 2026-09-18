@@ -11,6 +11,7 @@ from dataclasses import replace
 from action_platform.abc import DeployTarget
 from action_platform.core.context import Context, DeployResult, Diagnosis
 from action_platform.core.exception import ActionPlatformError, DeployError
+from action_platform.logging import logger
 from action_platform.remote.client import Remote
 
 from apx_aws_lambda import shell
@@ -154,11 +155,59 @@ class LambdaTarget(DeployTarget):
             env=self.env(ctx),
         )
 
+    def _status(self, ctx: Context) -> str | None:
+        """The stack's CloudFormation status, or None when there is no stack."""
+        try:
+            data = shell.aws(
+                "cloudformation",
+                "describe-stacks",
+                "--stack-name",
+                self._stack(ctx),
+                region=self._region(ctx),
+                env=self.env(ctx),
+            )
+        except DeployError:
+            return None
+
+        rows = data.get("Stacks") or []
+
+        return rows[0].get("StackStatus") if rows else None
+
+    def _clear_failed_creation(self, ctx: Context) -> None:
+        """A stack whose first creation failed sits in ROLLBACK_COMPLETE and refuses updates; it never existed, so it is deleted before the deploy creates it again."""
+        if self._status(ctx) != "ROLLBACK_COMPLETE":
+            return
+
+        stack = self._stack(ctx)
+        logger.info(
+            "stack %s is ROLLBACK_COMPLETE: deleting it before the deploy", stack
+        )
+        region = self._region(ctx)
+        env = self.env(ctx)
+        shell.aws(
+            "cloudformation",
+            "delete-stack",
+            "--stack-name",
+            stack,
+            region=region,
+            env=env,
+        )
+        shell.aws(
+            "cloudformation",
+            "wait",
+            "stack-delete-complete",
+            "--stack-name",
+            stack,
+            region=region,
+            env=env,
+        )
+
     def deploy(self, ctx: Context) -> DeployResult:
         sam = shell.require("sam", "pip install aws-sam-cli")
         stage = self._stage(ctx)
         env = self.env(ctx)
         shell.run([*sam, "build"], cwd=ctx.repo_root, env=env)
+        self._clear_failed_creation(ctx)
         args = [
             *sam,
             "deploy",
