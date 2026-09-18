@@ -155,6 +155,39 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(other, 403)
         self.assertIn("may not deploy", refused["error"])
 
+    def test_deploy_policy_reads_the_public_web_adapter_layer(self):
+        policy = self.app.App("acme", "shop", "orders").deploy_policy("us-east-1")
+        layers = [
+            s for s in policy["Statement"] if s["Action"] == ["lambda:GetLayerVersion"]
+        ]
+
+        self.assertEqual(
+            layers[0]["Resource"],
+            ["arn:aws:lambda:us-east-1:753240598075:layer:LambdaAdapterLayer*:*"],
+        )
+
+    def test_credentials_refresh_the_policy_of_an_app_registered_by_an_older_proxy(
+        self,
+    ):
+        self.rows["acme/shop/orders"] = {
+            "app": "acme/shop/orders",
+            "region": "us-east-1",
+            "subjects": ["org:acme:project:shop"],
+        }
+        claims = {"sub": "org:acme:project:shop:app:orders", "organization": "acme"}
+
+        first, _ = self.call("POST", "/apps/acme/shop/orders/credentials", claims)
+        second, _ = self.call("POST", "/apps/acme/shop/orders/credentials", claims)
+
+        self.assertEqual((first, second), (200, 200))
+        self.assertEqual(self.iam.put_role_policy.call_count, 1)
+        put = self.iam.put_role_policy.call_args.kwargs
+        self.assertEqual(put["RoleName"], "ap-deploy-acme-shop-orders")
+        self.assertIn("753240598075", put["PolicyDocument"])
+        self.assertEqual(
+            self.rows["acme/shop/orders"]["policy"], self.app.POLICY_VERSION
+        )
+
     def test_credentials_wait_for_a_role_iam_has_not_propagated_yet(self):
         self.rows["acme/shop/orders"] = {
             "app": "acme/shop/orders",
