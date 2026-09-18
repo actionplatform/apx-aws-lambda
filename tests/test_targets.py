@@ -90,6 +90,60 @@ class LambdaTargetTest(unittest.TestCase):
         self.assertEqual(result.url, "https://x")
         self.assertEqual(result.version, "1.2.0")
 
+    def test_a_stack_left_in_rollback_complete_is_deleted_before_the_deploy(self):
+        target = LambdaTarget()
+        statuses = iter(["ROLLBACK_COMPLETE", "UPDATE_COMPLETE"])
+
+        def run(args, cwd=None, env=None):
+            self.calls.append([Path(args[0]).name, *args[1:]])
+            key = " ".join(args[1:3])
+
+            if key == "cloudformation describe-stacks":
+                return json.dumps(
+                    {
+                        "Stacks": [
+                            {
+                                "StackStatus": next(statuses),
+                                "Outputs": [
+                                    {"OutputKey": "ApiUrl", "OutputValue": "https://x"}
+                                ],
+                            }
+                        ]
+                    }
+                )
+
+            return "{}"
+
+        with mock.patch.multiple(
+            shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
+        ):
+            result = target.deploy(self.ctx("dev"))
+
+        names = [c[:3] for c in self.calls]
+        self.assertIn(["aws", "cloudformation", "delete-stack"], names)
+        self.assertIn(["aws", "cloudformation", "wait"], names)
+        self.assertLess(
+            names.index(["aws", "cloudformation", "delete-stack"]),
+            names.index(["sam", "deploy", "--no-confirm-changeset"]),
+        )
+        self.assertTrue(result.ok)
+
+    def test_a_healthy_stack_is_left_alone(self):
+        target = LambdaTarget()
+
+        with self.fake(
+            {
+                "cloudformation describe-stacks": {
+                    "Stacks": [{"StackStatus": "UPDATE_COMPLETE", "Outputs": []}]
+                }
+            }
+        ):
+            target.deploy(self.ctx("dev"))
+
+        self.assertNotIn(
+            ["aws", "cloudformation", "delete-stack"], [c[:3] for c in self.calls]
+        )
+
     def test_diagnose_reads_the_stack(self):
         with self.fake(
             {
