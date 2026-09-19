@@ -84,6 +84,8 @@ class LambdaTargetTest(unittest.TestCase):
                 "shop-prod",
                 "--config-env",
                 "prod",
+                "--parameter-overrides",
+                "Stage=prod",
             ],
             self.calls,
         )

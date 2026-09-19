@@ -1,11 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: {{ cookiecutter.project_slug }} — Spring Boot app on Lambda (Lambda Web Adapter) behind an HTTP API
+Description: {{ cookiecutter.project_slug }} — {{ cookiecutter.language }} web app on Lambda (Lambda Web Adapter) behind an HTTP API
 
 Parameters:
   Stage:
     Type: String
-    AllowedValues: [dev, prod]
     Default: dev
   DomainName:
     Type: String
@@ -28,7 +27,11 @@ Conditions:
 Globals:
   Function:
     Timeout: 30
+{%- if cookiecutter.language in ["java", "kotlin"] %}
     MemorySize: 1024
+{%- else %}
+    MemorySize: 512
+{%- endif %}
     Architectures: [arm64]
 
 Resources:
@@ -42,20 +45,37 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-api"
       CodeUri: .
+{%- if cookiecutter.language == "go" %}
+      Handler: bootstrap
+      Runtime: provided.al2023
+{%- else %}
       Handler: run.sh
-      Runtime: java17
+{%- if cookiecutter.language == "python" %}
+      Runtime: python3.12
+{%- elif cookiecutter.language == "node" %}
+      Runtime: nodejs22.x
+{%- elif cookiecutter.language == "ruby" %}
+      Runtime: ruby3.3
+{%- else %}
+      Runtime: java21
+{%- endif %}
+{%- endif %}
       Role: !If [HasExecutionRole, !Ref ExecutionRoleArn, !Ref AWS::NoValue]
       Layers:
         - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:25
       Environment:
         Variables:
-          SCOPE: !If [IsProd, production, development]
-          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
-          AWS_LWA_PORT: "8080"
+          SCOPE: !Ref Stage
           PORT: "8080"
+          AWS_LWA_PORT: "8080"
           AWS_LWA_READINESS_CHECK_PATH: /health
+{%- if cookiecutter.language != "go" %}
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+{%- endif %}
+{%- if cookiecutter.language in ["java", "kotlin"] %}
           AWS_LWA_ASYNC_INIT: "true"
           JAVA_TOOL_OPTIONS: -XX:+TieredCompilation -XX:TieredStopAtLevel=1
+{%- endif %}
       Events:
         Http:
           Type: HttpApi

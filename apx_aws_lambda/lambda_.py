@@ -112,21 +112,25 @@ class LambdaTarget(DeployTarget):
         return stack
 
     def _overrides(self, ctx: Context, env: dict[str, str] | None) -> list[str]:
-        """`--parameter-overrides`: the stage's own from samconfig.toml, plus the execution role the proxy granted — the CLI flag replaces the file's, so both go together."""
-        role = (env or {}).get("AP_EXECUTION_ROLE")
-
-        if not role:
-            return []
-
+        """`--parameter-overrides`: the stage's own from samconfig.toml, then Stage set to the scope's name and the execution role the proxy granted — the CLI flag replaces the file's, so they all go together."""
         params = (
             self._samconfig(ctx)
             .get(self._stage(ctx), {})
             .get("deploy", {})
             .get("parameters", {})
         )
-        own = params.get("parameter_overrides") or ""
+        own = [
+            item
+            for item in str(params.get("parameter_overrides") or "").split()
+            if not item.startswith(("Stage=", "ExecutionRoleArn="))
+        ]
+        own.append(f"Stage={ctx.stage}")
+        role = (env or {}).get("AP_EXECUTION_ROLE")
 
-        return ["--parameter-overrides", f"{own} ExecutionRoleArn={role}".strip()]
+        if role:
+            own.append(f"ExecutionRoleArn={role}")
+
+        return ["--parameter-overrides", " ".join(own)]
 
     def _region(self, ctx: Context) -> str | None:
         params = (

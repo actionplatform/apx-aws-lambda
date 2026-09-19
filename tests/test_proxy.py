@@ -267,7 +267,7 @@ class ProxyClientTest(ProxyCase):
             deploy[-2:],
             [
                 "--parameter-overrides",
-                "ExecutionRoleArn=arn:aws:iam::1:role/action-platform/ap-exec-acme-shop-orders",
+                "Stage=dev ExecutionRoleArn=arn:aws:iam::1:role/action-platform/ap-exec-acme-shop-orders",
             ],
         )
 
