@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.0 — 2026-09-19
+
+### Features
+- **overlay:** one template for every language, built by ap-build package
+
 ## v0.4.1 — 2026-09-18
 
 ### Refactoring
