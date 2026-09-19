@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.0 — 2026-09-18
+
+### Features
+- **shell:** sam output streams to the platform's job log line by line; needs action-platform ≥ 0.23.0
+
 ## v0.3.11 — 2026-09-18
 
 ### Features
