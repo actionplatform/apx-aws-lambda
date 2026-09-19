@@ -56,7 +56,7 @@ jobs:
           python-version: "3.12"
 
       - if: steps.gate.outputs.ready == 'true'
-        run: pip install aws-sam-cli
+        run: pip install aws-sam-cli "ap-build @ git+https://github.com/actionplatform/images-base@master"
 
       - if: steps.gate.outputs.ready == 'true'
         run: sam build

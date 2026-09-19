@@ -1,14 +1,16 @@
 # Deploy — AWS Lambda (SAM)
 
-Overlay `cloud/aws/lambda`. The app runs on Lambda (arm64) behind an HTTP API Gateway; `sam build` follows the `Makefile` the overlay left for the language:
+Overlay `cloud/aws/lambda`. The app runs on Lambda (arm64) behind an HTTP API Gateway, the same way in every language: the **Lambda Web Adapter** layer starts the app as an HTTP server on `$PORT` (8080) and proxies the API Gateway events to it. `sam build` follows the one-line `Makefile` the overlay left — `ap-build package` — which assembles the app, its dependencies and `run.sh` (`exec <start command>`) into the function's artifact:
 
-| Language | Runtime | How the app is served |
-|---|---|---|
-| Python | `python3.12` | `lambda_handler.py` — Mangum wraps `app.create_app()`; dependencies build into a layer from wheels |
-| Node | `nodejs22.x` | the Lambda Web Adapter layer runs `run.sh` (`node dist/server.js`) and proxies HTTP to port 8080 |
-| Java, Kotlin | `java17` | the Lambda Web Adapter layer runs `run.sh` (`java -jar app.jar`), readiness on `/health` |
-| Go | `provided.al2023` | `cmd/lambda/main.go` (`-tags lambda`) — the gin engine behind `aws-lambda-go-api-proxy`, one static `bootstrap` |
-| Ruby | `ruby3.3` | `lambda_handler.rb` — the Rack app from `app.rb` called straight from the API Gateway event, no server |
+| Language | Runtime | `ap-build package` | `run.sh` |
+|---|---|---|---|
+| Python | `python3.12` | the project's wheel and its dependencies, built for arm64 | `uvicorn app:app --port $PORT` |
+| Node | `nodejs22.x` | `dist/` and the pruned `node_modules` | `node dist/server.js` |
+| Java, Kotlin | `java21` | `target/*.jar` as `app.jar` | `java -jar app.jar --server.port=$PORT` |
+| Go | `provided.al2023` | one static binary named `bootstrap` from `./cmd/server` | — the binary itself; the adapter runs as an extension |
+| Ruby | `ruby3.3` | the app and `vendor/bundle` without development/test gems | `rackup -s webrick -p $PORT` |
+
+`[build] start` (or `[build] package`, `[build] main`) in `platform.toml` overrides the language's default. `ap-build` comes with the platform's worker and with the `build-<language>` images; `pip install ap-build` puts it on a machine.
 
 The route is `/health` — API Gateway reserves `/ping` on `execute-api` and answers it itself.
 
@@ -22,7 +24,7 @@ sam deploy                     # dev stack
 sam deploy --config-env prod   # prod stack
 ```
 
-Through the platform's deploy proxy the stack is named `ap-<org>-<project>-<app>-<dev|prod>` and `--stack-name` is set by the target; `samconfig.toml`'s `stack_name` only matters for a deploy from a machine.
+Through the platform's deploy proxy the stack is named `ap-<org>-<project>-<app>-<scope>` (`Stage` takes the scope's name) and `--stack-name` is set by the target; `samconfig.toml`'s `stack_name` only matters for a deploy from a machine.
 
 ## CI
 
