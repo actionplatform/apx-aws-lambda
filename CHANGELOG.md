@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.1 — 2026-09-18
+
+### Refactoring
+- **proxy:** one module per responsibility — settings, apps, roles, registry, credentials, auth, service; app.py is the HTTP edge
+
 ## v0.4.0 — 2026-09-18
 
 ### Features
