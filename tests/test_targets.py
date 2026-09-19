@@ -1,6 +1,7 @@
 """The target drives `aws` and `sam`; here both are fakes, so what is asserted is the sequence and the answers."""
 
 import json
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -361,3 +362,46 @@ class ModuleEnvTest(unittest.TestCase):
         env = shell.module_env({"PATH": "/bin"})
 
         self.assertEqual(env, {"PATH": "/bin", "SAM_CLI_TELEMETRY": "0"})
+
+
+class ShellStreamsSamTest(unittest.TestCase):
+    def sam(self, script: str) -> list[str]:
+        return [sys.executable, "-m", "samcli", "-u", "-c", script]
+
+    def test_sam_output_reaches_the_log_sink_line_by_line(self):
+        from action_platform.core.process import Completed
+        from action_platform.logging import capture
+
+        seen: list[str] = []
+
+        def fake_stream(args, cwd=None, env=None, tail=60):
+            for line in ("Building", "Build Succeeded"):
+                from action_platform.logging import emit
+
+                emit(line)
+
+            return Completed(0, "Building\nBuild Succeeded")
+
+        with mock.patch.object(shell, "stream", fake_stream), capture(seen.append):
+            out = shell.run(self.sam("x"))
+
+        self.assertEqual(seen, ["Building", "Build Succeeded"])
+        self.assertEqual(out.splitlines()[-1], "Build Succeeded")
+
+    def test_a_failing_sam_keeps_the_tail_in_the_error(self):
+        from action_platform.core.process import Completed
+
+        with mock.patch.object(
+            shell, "stream", return_value=Completed(2, "step 1\nboom")
+        ):
+            with self.assertRaises(DeployError) as caught:
+                shell.run(self.sam("x"))
+
+        self.assertIn("boom", str(caught.exception))
+
+    def test_aws_is_read_whole_not_streamed(self):
+        with mock.patch.object(shell, "stream") as streamed:
+            out = shell.run([sys.executable, "-c", "print('{\"ok\": 1}')"])
+
+        streamed.assert_not_called()
+        self.assertEqual(out.strip(), '{"ok": 1}')
