@@ -1,160 +1,51 @@
-"""The deploy proxy: a platform token in, a short-lived credential of one app's deploy role out — when the app's grants say so. Admin calls (create an app's roles, set grants) need `org.manage` in the token's scopes."""
+"""The deploy proxy's HTTP edge: a Lambda function URL event in, JSON out. Routes name a method of ProxyService; everything else — roles, rows, tokens, credentials — lives in its own module.
+
+Wiring happens here and only here: the AWS clients, the key cache and the settings are module state (a Lambda container keeps them warm), and each request builds the service on top of them."""
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
-import time
+import time  # noqa: F401 — the retry's sleep is patched here by the tests
 from typing import Any, Callable
 
 import boto3
+from apps import App as _App
+from auth import Auth
 from botocore.exceptions import ClientError
+from credentials import Credentials
+from errors import Refused
 from oidc import Keys, TokenError
-from oidc import verify as verify_token
+from registry import Registry
+from roles import Roles
+from service import ProxyService
+from settings import POLICY_VERSION, Settings
 
-ISSUER = os.environ.get("ISSUER_URL", "").rstrip("/")
-ORGANIZATION = os.environ.get("ORGANIZATION", "")
-TABLE = os.environ.get("TABLE", "")
-SAM_BUCKET = "aws-sam-cli-managed-default"
-BOUNDARY_ARN = os.environ.get("BOUNDARY_ARN", "")
-ACCOUNT_ID = os.environ.get("ACCOUNT_ID", "")
-VERSION = os.environ.get("PROXY_VERSION", "0.0.0")
-POLICY_VERSION = 3
-PUBLIC_LAYERS = [("753240598075", "LambdaAdapterLayer*")]
-PATH = "/action-platform/"
-SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-MAX_DURATION = 3600
-ASSUME_ATTEMPTS = 6
-ASSUME_BACKOFF = 2.0
-MIN_DURATION = 900
-
-keys = Keys(f"{ISSUER}/.well-known/jwks.json")
+settings = Settings.from_env()
+keys = Keys(settings.jwks_url)
 iam = boto3.client("iam")
 sts = boto3.client("sts")
-table = boto3.resource("dynamodb").Table(TABLE) if TABLE else None
+table = boto3.resource("dynamodb").Table(settings.table) if settings.table else None
+
+APP = re.compile(
+    r"^/apps/(?P<org>[^/]+)/(?P<project>[^/]+)/(?P<app>[^/]+)(?P<rest>/grants|/credentials)?$"
+)
+
+__all__ = ["App", "ClientError", "POLICY_VERSION", "handler", "verify"]
 
 
-class Refused(Exception):
-    def __init__(self, status: int, message: str) -> None:
-        super().__init__(message)
-        self.status = status
+def App(org: str, project: str, name: str) -> _App:
+    return _App(org, project, name, settings)
 
 
-class App:
-    def __init__(self, org: str, project: str, name: str) -> None:
-        for part in (org, project, name):
-            if not SLUG.match(part):
-                raise Refused(400, f"bad slug {part!r}")
+def service() -> ProxyService:
+    return ProxyService(
+        settings, Roles(iam, sts, settings), Registry(table), Credentials(sts)
+    )
 
-        if org != ORGANIZATION:
-            raise Refused(403, f"this proxy serves organization {ORGANIZATION!r}")
 
-        self.org, self.project, self.name = org, project, name
-
-    @property
-    def key(self) -> str:
-        return f"{self.org}/{self.project}/{self.name}"
-
-    @property
-    def subject(self) -> str:
-        return f"org:{self.org}:project:{self.project}:app:{self.name}"
-
-    @property
-    def prefix(self) -> str:
-        return f"ap-{self.org}-{self.project}-{self.name}"
-
-    def role_name(self, kind: str) -> str:
-        """`ap-<kind>-<org>-<project>-<app>`, shortened with a hash when IAM's 64 characters run out."""
-        name = f"ap-{kind}-{self.org}-{self.project}-{self.name}"
-
-        if len(name) <= 64:
-            return name
-
-        digest = hashlib.sha256(name.encode()).hexdigest()[:8]
-
-        return f"{name[:55]}-{digest}"
-
-    def role_arn(self, kind: str) -> str:
-        return f"arn:aws:iam::{ACCOUNT_ID}:role{PATH}{self.role_name(kind)}"
-
-    def deploy_policy(self, region: str) -> dict:
-        stack = f"arn:aws:cloudformation:{region}:{ACCOUNT_ID}:stack/{self.prefix}*"
-
-        return {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Action": ["cloudformation:*"],
-                    "Resource": [stack],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": [
-                        "cloudformation:ListStacks",
-                        "cloudformation:ValidateTemplate",
-                        "cloudformation:GetTemplateSummary",
-                        "cloudformation:CreateChangeSet",
-                    ],
-                    "Resource": "*",
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": ["lambda:*"],
-                    "Resource": [
-                        f"arn:aws:lambda:{region}:{ACCOUNT_ID}:function:{self.prefix}*",
-                        f"arn:aws:lambda:{region}:{ACCOUNT_ID}:layer:{self.prefix}*",
-                    ],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": ["lambda:GetLayerVersion"],
-                    "Resource": [
-                        f"arn:aws:lambda:{region}:{account}:layer:{layer}:*"
-                        for account, layer in PUBLIC_LAYERS
-                    ],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": ["apigateway:*"],
-                    "Resource": [f"arn:aws:apigateway:{region}::/*"],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": ["logs:*"],
-                    "Resource": [
-                        f"arn:aws:logs:{region}:{ACCOUNT_ID}:log-group:/aws/lambda/{self.prefix}*"
-                    ],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": ["iam:PassRole", "iam:GetRole"],
-                    "Resource": [self.role_arn("exec")],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": ["iam:GetRole", "iam:SimulatePrincipalPolicy"],
-                    "Resource": [self.role_arn("deploy")],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": ["cloudformation:*"],
-                    "Resource": [
-                        f"arn:aws:cloudformation:{region}:{ACCOUNT_ID}:stack/{SAM_BUCKET}*"
-                    ],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": ["s3:*"],
-                    "Resource": [
-                        f"arn:aws:s3:::{SAM_BUCKET}-*",
-                        f"arn:aws:s3:::{SAM_BUCKET}-*/*",
-                    ],
-                },
-            ],
-        }
+def verify(headers: dict, own_url: str) -> dict:
+    return Auth(keys, settings).claims(headers, own_url)
 
 
 def handler(event: dict, context: Any) -> dict:
@@ -163,15 +54,14 @@ def handler(event: dict, context: Any) -> dict:
     own_url = "https://" + event.get("requestContext", {}).get("domainName", "")
 
     try:
-        route, params = match(method, path)
+        if method == "GET" and path == "/health":
+            return reply(200, service().health())
+
+        route, target = match(method, path)
         body = json.loads(event.get("body") or "{}") if event.get("body") else {}
-
-        if route is health:
-            return reply(200, health())
-
         claims = verify(event.get("headers") or {}, own_url)
 
-        return reply(200, route(claims, body, **params))
+        return reply(200, route(service(), claims, target, body))
     except Refused as e:
         return reply(e.status, {"error": str(e)})
     except TokenError as e:
@@ -182,300 +72,36 @@ def handler(event: dict, context: Any) -> dict:
         return reply(500, {"error": f"aws: {e}"})
 
 
+Route = Callable[[ProxyService, dict, _App, dict], dict]
+
+ROUTES: dict[tuple[str, str], Route] = {
+    ("POST", ""): lambda s, c, a, b: s.create(c, a, b.get("region")),
+    ("GET", ""): lambda s, c, a, b: s.show(c, a),
+    ("DELETE", ""): lambda s, c, a, b: s.delete(c, a),
+    ("PUT", "/grants"): lambda s, c, a, b: s.grant(c, a, b.get("subjects")),
+    ("POST", "/credentials"): lambda s, c, a, b: s.credentials_for(
+        c, a, b.get("duration")
+    ),
+}
+
+
+def match(method: str, path: str) -> tuple[Route, _App]:
+    found = APP.match(path)
+    route = (
+        ROUTES.get((method, (found.group("rest") or "") if found else ""))
+        if found
+        else None
+    )
+
+    if found is None or route is None:
+        raise Refused(404, f"no route {method} {path}")
+
+    return route, App(found.group("org"), found.group("project"), found.group("app"))
+
+
 def reply(status: int, data: dict) -> dict:
     return {
         "statusCode": status,
         "headers": {"content-type": "application/json"},
         "body": json.dumps(data),
-    }
-
-
-APP = r"/apps/(?P<org>[^/]+)/(?P<project>[^/]+)/(?P<app>[^/]+)"
-
-
-def match(method: str, path: str) -> tuple[Callable[..., dict], dict]:
-    routes: list[tuple[str, str, Callable[..., dict]]] = [
-        ("GET", r"/health", health),
-        ("POST", APP, create_app),
-        ("GET", APP, show_app),
-        ("DELETE", APP, delete_app),
-        ("PUT", APP + r"/grants", set_grants),
-        ("POST", APP + r"/credentials", credentials),
-    ]
-
-    for verb, pattern, fn in routes:
-        found = re.fullmatch(pattern, path)
-
-        if found and verb == method:
-            return fn, found.groupdict()
-
-    raise Refused(404, f"no route {method} {path}")
-
-
-def verify(headers: dict, own_url: str) -> dict:
-    auth = headers.get("authorization") or headers.get("Authorization") or ""
-
-    if not auth.lower().startswith("bearer "):
-        raise Refused(401, "bearer token required")
-
-    token = auth[7:].strip()
-    claims = verify_token(token, keys, ISSUER, [own_url, own_url + "/"])
-
-    if claims.get("organization") != ORGANIZATION:
-        raise Refused(403, f"token is for organization {claims.get('organization')!r}")
-
-    return claims
-
-
-def admin(claims: dict) -> None:
-    if "org.manage" not in (claims.get("scopes") or []):
-        raise Refused(403, "org.manage is required")
-
-
-def health() -> dict:
-    return {
-        "version": VERSION,
-        "issuer": ISSUER,
-        "organization": ORGANIZATION,
-        "boundary": BOUNDARY_ARN,
-        "account": ACCOUNT_ID,
-    }
-
-
-def create_app(claims: dict, body: dict, org: str, project: str, app: str) -> dict:
-    admin(claims)
-    target = App(org, project, app)
-    region = body.get("region") or os.environ.get("AWS_REGION", "us-east-1")
-    function_role = sts.get_caller_identity()["Arn"]
-    proxy_role = re.sub(
-        r"^arn:aws:sts::(\d+):assumed-role/([^/]+)/.*$",
-        r"arn:aws:iam::\1:role/\2",
-        function_role,
-    )
-
-    ensure_role(
-        target.role_name("exec"),
-        trust={
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {"Service": "lambda.amazonaws.com"},
-                    "Action": "sts:AssumeRole",
-                }
-            ],
-        },
-        boundary=BOUNDARY_ARN,
-        managed=["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"],
-        tags=target,
-    )
-    ensure_role(
-        target.role_name("deploy"),
-        trust={
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {"AWS": proxy_role},
-                    "Action": "sts:AssumeRole",
-                }
-            ],
-        },
-        inline={"deploy": target.deploy_policy(region)},
-        tags=target,
-    )
-    row = table.get_item(Key={"app": target.key}).get("Item") or {}
-    table.put_item(
-        Item={
-            "app": target.key,
-            "region": region,
-            "subjects": row.get("subjects") or [target.subject],
-            "created_at": row.get("created_at") or int(time.time()),
-            "created_by": row.get("created_by") or claims.get("actor") or claims["sub"],
-            "policy": POLICY_VERSION,
-        }
-    )
-
-    return show_app(claims, {}, org, project, app)
-
-
-def ensure_role(
-    name: str,
-    trust: dict,
-    tags: App,
-    boundary: str | None = None,
-    managed: list[str] | None = None,
-    inline: dict[str, dict] | None = None,
-) -> str:
-    role_tags = [
-        {"Key": "action-platform:app", "Value": tags.key},
-        {"Key": "action-platform:prefix", "Value": tags.prefix},
-        {"Key": "action-platform:managed", "Value": "true"},
-    ]
-
-    try:
-        arn = iam.get_role(RoleName=name)["Role"]["Arn"]
-        iam.update_assume_role_policy(RoleName=name, PolicyDocument=json.dumps(trust))
-        iam.tag_role(RoleName=name, Tags=role_tags)
-    except iam.exceptions.NoSuchEntityException:
-        kwargs: dict[str, Any] = {
-            "RoleName": name,
-            "Path": PATH,
-            "AssumeRolePolicyDocument": json.dumps(trust),
-            "Tags": role_tags,
-        }
-
-        if boundary:
-            kwargs["PermissionsBoundary"] = boundary
-
-        arn = iam.create_role(**kwargs)["Role"]["Arn"]
-
-    for policy in managed or []:
-        iam.attach_role_policy(RoleName=name, PolicyArn=policy)
-
-    for policy_name, document in (inline or {}).items():
-        iam.put_role_policy(
-            RoleName=name, PolicyName=policy_name, PolicyDocument=json.dumps(document)
-        )
-
-    return arn
-
-
-def refresh_policy(target: App, row: dict) -> None:
-    region = row.get("region") or os.environ.get("AWS_REGION", "us-east-1")
-    iam.put_role_policy(
-        RoleName=target.role_name("deploy"),
-        PolicyName="deploy",
-        PolicyDocument=json.dumps(target.deploy_policy(region)),
-    )
-    table.put_item(Item={**row, "policy": POLICY_VERSION})
-
-
-def show_app(claims: dict, body: dict, org: str, project: str, app: str) -> dict:
-    admin(claims)
-    target = App(org, project, app)
-    row = table.get_item(Key={"app": target.key}).get("Item")
-
-    if row is None:
-        raise Refused(404, f"no app {target.key}; create it first")
-
-    return {
-        "app": target.key,
-        "subject": target.subject,
-        "region": row.get("region"),
-        "stack_prefix": target.prefix,
-        "deploy_role": target.role_arn("deploy"),
-        "execution_role": target.role_arn("exec"),
-        "subjects": list(row.get("subjects") or []),
-    }
-
-
-def delete_app(claims: dict, body: dict, org: str, project: str, app: str) -> dict:
-    admin(claims)
-    target = App(org, project, app)
-
-    for kind in ("deploy", "exec"):
-        drop_role(target.role_name(kind))
-
-    table.delete_item(Key={"app": target.key})
-
-    return {"app": target.key, "deleted": True}
-
-
-def drop_role(name: str) -> None:
-    """A role that is already gone is evaluated without its path by IAM, where the function may only look — so look first, then touch."""
-    try:
-        iam.get_role(RoleName=name)
-    except iam.exceptions.NoSuchEntityException:
-        return
-
-    attached = iam.list_attached_role_policies(RoleName=name)["AttachedPolicies"]
-
-    for policy in attached:
-        iam.detach_role_policy(RoleName=name, PolicyArn=policy["PolicyArn"])
-
-    for policy_name in iam.list_role_policies(RoleName=name)["PolicyNames"]:
-        iam.delete_role_policy(RoleName=name, PolicyName=policy_name)
-
-    iam.delete_role(RoleName=name)
-
-
-def set_grants(claims: dict, body: dict, org: str, project: str, app: str) -> dict:
-    admin(claims)
-    target = App(org, project, app)
-    subjects = body.get("subjects")
-
-    if not isinstance(subjects, list) or not all(isinstance(s, str) for s in subjects):
-        raise ValueError("subjects must be a list of subject prefixes")
-
-    for subject in subjects:
-        if not subject.startswith(f"org:{ORGANIZATION}"):
-            raise ValueError(
-                f"subject {subject!r} is outside organization {ORGANIZATION!r}"
-            )
-
-    if table.get_item(Key={"app": target.key}).get("Item") is None:
-        raise Refused(404, f"no app {target.key}; create it first")
-
-    table.update_item(
-        Key={"app": target.key},
-        UpdateExpression="SET subjects = :s",
-        ExpressionAttributeValues={":s": sorted(set(subjects))},
-    )
-
-    return show_app(claims, {}, org, project, app)
-
-
-def assume_role(role_arn: str, session: str, duration: int) -> dict:
-    """IAM takes a few seconds to let a role just created be assumed; the first deploy of an app hits exactly that window."""
-    for attempt in range(ASSUME_ATTEMPTS):
-        try:
-            return sts.assume_role(
-                RoleArn=role_arn, RoleSessionName=session, DurationSeconds=duration
-            )["Credentials"]
-        except ClientError as e:
-            code = e.response.get("Error", {}).get("Code")
-
-            if code != "AccessDenied" or attempt == ASSUME_ATTEMPTS - 1:
-                raise
-
-            time.sleep(ASSUME_BACKOFF)
-
-    raise RuntimeError("unreachable")
-
-
-def credentials(claims: dict, body: dict, org: str, project: str, app: str) -> dict:
-    target = App(org, project, app)
-    row = table.get_item(Key={"app": target.key}).get("Item")
-
-    if row is None:
-        raise Refused(404, f"no app {target.key}; create it first")
-
-    sub = claims["sub"]
-    granted = any(
-        sub == allowed or sub.startswith(allowed + ":")
-        for allowed in row.get("subjects") or []
-    )
-
-    if not granted:
-        raise Refused(403, f"{sub} may not deploy {target.key}")
-
-    if int(row.get("policy") or 0) < POLICY_VERSION:
-        refresh_policy(target, row)
-
-    duration = int(body.get("duration") or MIN_DURATION)
-    duration = max(MIN_DURATION, min(MAX_DURATION, duration))
-    session = re.sub(r"[^\w+=,.@-]", "-", claims.get("actor") or "platform")[:64]
-    creds = assume_role(target.role_arn("deploy"), session, duration)
-
-    return {
-        "app": target.key,
-        "region": row.get("region"),
-        "stack_prefix": target.prefix,
-        "execution_role": target.role_arn("exec"),
-        "deploy_role": target.role_arn("deploy"),
-        "access_key_id": creds["AccessKeyId"],
-        "secret_access_key": creds["SecretAccessKey"],
-        "session_token": creds["SessionToken"],
-        "expiration": creds["Expiration"].isoformat(),
     }
