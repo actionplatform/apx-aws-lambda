@@ -1,13 +1,12 @@
 """`aws/lambda`: a SAM stack per stage. Deploy = `sam build` + `sam deploy --config-env <stage>`; rollback = CloudFormation rollback to the previous stack state; diagnose = stack status and the HTTP API url.
 
-Credentials, in order: `proxy_url` + `app` under `[deploy]` — the deploy proxy in the account exchanges a platform token for the app's deploy-role credentials; `role_arn` — the target assumes that role with the same token (`sts assume-role-with-web-identity`); the organization's connected account (`AP_AWS_LAMBDA_ROLE_ARN` with `AP_APP`) — the deploy role the connect stack made, scoped to the app by the token's session tag; the organization's proxy (`AP_AWS_LAMBDA_PROXY_URL`); none — the AWS CLI's own chain (profile, SSO, instance role). No access key anywhere."""
+Credentials, in order: `role_arn` under `[deploy]` — the target assumes that role with a platform token (`sts assume-role-with-web-identity`); the organization's connected account (`AP_AWS_LAMBDA_ROLE_ARN` with `AP_APP`) — the deploy role the connect stack made, scoped to the app by the token's session tag; neither — the AWS CLI's own chain (profile, SSO, instance role). No access key anywhere."""
 
 from __future__ import annotations
 
 import os
 import re
 import tomllib
-from dataclasses import replace
 
 from action_platform.abc import DeployTarget
 from action_platform.core.context import Check, Context, DeployResult, Diagnosis
@@ -16,7 +15,6 @@ from action_platform.logging import logger
 from action_platform.remote.client import Remote
 
 from apx_aws_lambda import shell
-from apx_aws_lambda.proxy import ProxyClient, ProxyRefused
 
 BOUNDARY = "policy/action-platform/ActionPlatformAppBoundary"
 PREFIX_TAG = "action-platform:prefix"
@@ -31,7 +29,6 @@ class LambdaTarget(DeployTarget):
         config: str = "samconfig.toml",
         role_arn: str | None = None,
         session_name: str = "action-platform",
-        proxy_url: str | None = None,
         app: str | None = None,
         **_: object,
     ) -> None:
@@ -43,28 +40,12 @@ class LambdaTarget(DeployTarget):
         self.config = config
         self.role_arn = role_arn or os.environ.get("AWS_ROLE_ARN")
         self.session_name = session_name
-        self.proxy_url = proxy_url
         self.app = app
         self._env: dict[str, str] | None = None
 
-    def proxy(self, ctx: Context) -> ProxyClient | None:
-        """The deploy proxy, when one is named: `[deploy] proxy_url` and `app` in platform.toml, else what the platform set for the organization (`AP_AWS_LAMBDA_PROXY_URL`, `AP_APP` in `ctx.env`), else the process environment."""
-        url = (
-            self.proxy_url
-            or ctx.env.get("AP_AWS_LAMBDA_PROXY_URL")
-            or os.environ.get("AP_AWS_LAMBDA_PROXY_URL")
-        )
-
-        if not url:
-            return None
-
-        app = self.app or ctx.env.get("AP_APP") or os.environ.get("AP_APP", "")
-
-        return ProxyClient(url, app)
-
     def connected(self, ctx: Context) -> tuple[str, str] | None:
-        """The organization's connected account — the deploy role its connect stack made (`AP_AWS_LAMBDA_ROLE_ARN`) and the app's prefix from `AP_APP` — unless `[deploy]` names a proxy or a role of its own."""
-        if self.proxy_url or self.role_arn:
+        """The organization's connected account — the deploy role its connect stack made (`AP_AWS_LAMBDA_ROLE_ARN`) and the app's prefix from `AP_APP` — unless `[deploy]` names a role of its own."""
+        if self.role_arn:
             return None
 
         role = ctx.env.get("AP_AWS_LAMBDA_ROLE_ARN") or os.environ.get(
@@ -85,19 +66,16 @@ class LambdaTarget(DeployTarget):
         return role, "ap-" + "-".join(parts)
 
     def env(self, ctx: Context) -> dict[str, str] | None:
-        """The environment `aws` and `sam` run with: the proxy's credentials, else temporary credentials from `role_arn` or the connected account's deploy role, else the caller's own."""
+        """The environment `aws` and `sam` run with: temporary credentials from `role_arn` or the connected account's deploy role, else the caller's own."""
         if self._env is not None:
             return self._env
 
         connected = self.connected(ctx)
-        proxy = self.proxy(ctx) if connected is None else None
 
-        if proxy is None and connected is None and not self.role_arn:
+        if connected is None and not self.role_arn:
             return None
 
-        if proxy is not None:
-            granted = proxy.env(ctx, self.region)
-        elif connected is not None:
+        if connected is not None:
             granted = connected_env(ctx, *connected, self.session_name, self.region)
         else:
             granted = assume_role(
@@ -122,7 +100,7 @@ class LambdaTarget(DeployTarget):
         return tomllib.loads(path.read_text())
 
     def _stack(self, ctx: Context) -> str:
-        """The stack: `<prefix>-<stage>` when the proxy granted a prefix — the repository's samconfig.toml never has to know the organization — else samconfig.toml's `stack_name`."""
+        """The stack: `<prefix>-<stage>` for a connected account — the repository's samconfig.toml never has to know the organization — else samconfig.toml's `stack_name`."""
         prefix = (self.env(ctx) or {}).get("AP_STACK_PREFIX")
 
         if prefix:
@@ -142,7 +120,7 @@ class LambdaTarget(DeployTarget):
         return stack
 
     def _overrides(self, ctx: Context, env: dict[str, str] | None) -> list[str]:
-        """`--parameter-overrides`: the stage's own from samconfig.toml, then Stage set to the scope's name, the execution role the proxy granted and the boundary of a connected account — the CLI flag replaces the file's, so they all go together."""
+        """`--parameter-overrides`: the stage's own from samconfig.toml, then Stage set to the scope's name and the boundary of a connected account — the CLI flag replaces the file's, so they all go together."""
         params = (
             self._samconfig(ctx)
             .get(self._stage(ctx), {})
@@ -152,16 +130,9 @@ class LambdaTarget(DeployTarget):
         own = [
             item
             for item in str(params.get("parameter_overrides") or "").split()
-            if not item.startswith(
-                ("Stage=", "ExecutionRoleArn=", "PermissionsBoundaryArn=")
-            )
+            if not item.startswith(("Stage=", "PermissionsBoundaryArn="))
         ]
         own.append(f"Stage={ctx.stage}")
-        role = (env or {}).get("AP_EXECUTION_ROLE")
-
-        if role:
-            own.append(f"ExecutionRoleArn={role}")
-
         boundary = (env or {}).get("AP_BOUNDARY")
 
         if boundary:
@@ -258,13 +229,13 @@ class LambdaTarget(DeployTarget):
             checks.append(
                 Check("aws.credentials", True, identity.get("Arn", "credentials work"))
             )
-        except (DeployError, ProxyRefused) as e:
+        except DeployError as e:
             checks.append(
                 Check(
                     "aws.credentials",
                     False,
                     str(e),
-                    fix="connect the AWS account (or the deploy proxy) in the AWS Lambda plugin",
+                    fix="connect the AWS account in the AWS Lambda plugin",
                 )
             )
 
@@ -357,25 +328,17 @@ class LambdaTarget(DeployTarget):
         if layers:
             wanted.append((["lambda:GetLayerVersion"], layers))
 
-        execution = (env or {}).get("AP_EXECUTION_ROLE")
-
-        if execution:
-            wanted.append((["iam:PassRole"], [execution]))
-
         boundary = (env or {}).get("AP_BOUNDARY")
         context: list[str] = []
 
         if boundary:
-            wanted.append(
-                (
-                    ["iam:CreateRole"],
-                    [f"arn:aws:iam::{account}:role/{stack}-ApiFunctionRole"],
-                )
-            )
+            execution = f"arn:aws:iam::{account}:role/{stack}-ApiFunctionRole"
+            wanted.append((["iam:CreateRole", "iam:PassRole"], [execution]))
             context = [
                 "--context-entries",
                 f"ContextKeyName=aws:PrincipalTag/{PREFIX_TAG},ContextKeyValues={env['AP_STACK_PREFIX']},ContextKeyType=string",
                 f"ContextKeyName=iam:PermissionsBoundary,ContextKeyValues={boundary},ContextKeyType=string",
+                "ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string",
             ]
 
         denied: list[str] = []
@@ -416,7 +379,7 @@ class LambdaTarget(DeployTarget):
                     "aws.permissions",
                     False,
                     f"{role} may not: " + "; ".join(denied),
-                    fix="widen the deploy role's policy (update the connect stack, or redeploy the deploy proxy, when it created the role)",
+                    fix="widen the deploy role's policy (update the connect stack when it created the role)",
                 )
             ]
 
@@ -571,40 +534,18 @@ class LambdaTarget(DeployTarget):
         )
 
     def delete(self, ctx: Context) -> None:
-        """The stage's stack goes; once no stage is left, the app leaves the proxy too — its roles and grant — when the token may (`org.manage`)."""
-        if self.diagnose(ctx).status != "missing":
-            sam = shell.require("sam", "pip install aws-sam-cli")
-            args = [*sam, "delete", "--no-prompts", "--stack-name", self._stack(ctx)]
-            region = self._region(ctx)
-
-            if region:
-                args += ["--region", region]
-
-            shell.run(args, cwd=ctx.repo_root, env=self.env(ctx))
-
-        proxy = self.proxy(ctx)
-
-        if proxy is None or self._other_stage_lives(ctx):
+        """The stage's stack goes, and with it the execution role SAM created."""
+        if self.diagnose(ctx).status == "missing":
             return
 
-        try:
-            proxy.delete(token=proxy.token(ctx))
-        except ProxyRefused as e:
-            if e.status == 404:
-                return
+        sam = shell.require("sam", "pip install aws-sam-cli")
+        args = [*sam, "delete", "--no-prompts", "--stack-name", self._stack(ctx)]
+        region = self._region(ctx)
 
-            if e.status == 403:
-                raise DeployError(
-                    f"the stacks are gone but the proxy still knows {proxy.app} ({e.detail}): "
-                    "delete as an organization manager, or run `action-platform aws-lambda proxy delete`"
-                ) from e
+        if region:
+            args += ["--region", region]
 
-            raise
-
-    def _other_stage_lives(self, ctx: Context) -> bool:
-        other = replace(ctx, stage="dev" if ctx.stage == "prod" else "prod")
-
-        return self.diagnose(other).status != "missing"
+        shell.run(args, cwd=ctx.repo_root, env=self.env(ctx))
 
     def _url(self, ctx: Context) -> str | None:
         try:
