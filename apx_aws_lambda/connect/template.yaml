@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Action Platform - connects this AWS account. The platform's OIDC tokens assume one deploy role; the app's session tag scopes every stack, function, log group and execution role to that app. IAM only, no code, no AWS key.
+
+Parameters:
+  IssuerUrl:
+    Type: String
+    AllowedPattern: "^https://[^/].*[^/]$"
+    Description: The platform's public url, the OIDC issuer (https://platform.example.com), no trailing slash
+  Organization:
+    Type: String
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{0,62}$"
+    Description: The organization slug on the platform
+  OidcProviderArn:
+    Type: String
+    Default: ""
+    Description: An IAM OIDC provider for IssuerUrl that already exists in this account. Empty creates one.
+
+Conditions:
+  CreateProvider: !Equals [!Ref OidcProviderArn, ""]
+
+Resources:
+  Provider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: !Ref IssuerUrl
+      ClientIdList:
+        - sts.amazonaws.com
+
+  Boundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: ActionPlatformAppBoundary
+      Path: /action-platform/
+      Description: Caps every execution role an app's stack creates, by the role's action-platform:prefix tag; edit to widen or narrow what apps may do.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Logs
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/lambda/${!aws:PrincipalTag/action-platform:prefix}*"
+          - Sid: Tracing
+            Effect: Allow
+            Action:
+              - xray:PutTraceSegments
+              - xray:PutTelemetryRecords
+            Resource: "*"
+          - Sid: OwnResources
+            Effect: Allow
+            Action:
+              - s3:*
+              - dynamodb:*
+              - sqs:*
+              - sns:*
+              - lambda:InvokeFunction
+            Resource:
+              - "arn:aws:s3:::${aws:PrincipalTag/action-platform:prefix}-*"
+              - "arn:aws:s3:::${aws:PrincipalTag/action-platform:prefix}-*/*"
+              - !Sub "arn:aws:dynamodb:*:${AWS::AccountId}:table/${!aws:PrincipalTag/action-platform:prefix}-*"
+              - !Sub "arn:aws:sqs:*:${AWS::AccountId}:${!aws:PrincipalTag/action-platform:prefix}-*"
+              - !Sub "arn:aws:sns:*:${AWS::AccountId}:${!aws:PrincipalTag/action-platform:prefix}-*"
+              - !Sub "arn:aws:lambda:*:${AWS::AccountId}:function:${!aws:PrincipalTag/action-platform:prefix}*"
+          - Sid: OwnSecrets
+            Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+            Resource:
+              - !Sub "arn:aws:secretsmanager:*:${AWS::AccountId}:secret:${!aws:PrincipalTag/action-platform:prefix}/*"
+              - !Sub "arn:aws:ssm:*:${AWS::AccountId}:parameter/${!aws:PrincipalTag/action-platform:prefix}/*"
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ActionPlatformDeploy
+      Path: /action-platform/
+      Description: Assumed with the platform's OIDC token; scoped to one app by the session tag action-platform:prefix.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument: !Sub
+        - |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {"Federated": "${ProviderArn}"},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {"${Host}:aud": "sts.amazonaws.com"},
+                  "StringLike": {"${Host}:sub": "org:${Organization}:*"}
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Principal": {"Federated": "${ProviderArn}"},
+                "Action": "sts:TagSession",
+                "Condition": {
+                  "StringEquals": {"${Host}:aud": "sts.amazonaws.com"},
+                  "StringLike": {
+                    "${Host}:sub": "org:${Organization}:*",
+                    "aws:RequestTag/action-platform:prefix": "ap-${Organization}-*"
+                  },
+                  "ForAllValues:StringEquals": {"aws:TagKeys": ["action-platform:prefix"]}
+                }
+              }
+            ]
+          }
+        - Host: !Select [1, !Split ["https://", !Ref IssuerUrl]]
+          ProviderArn: !If [CreateProvider, !Ref Provider, !Ref OidcProviderArn]
+      Tags:
+        - Key: action-platform:managed
+          Value: "true"
+      Policies:
+        - PolicyName: deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: OwnStacks
+                Effect: Allow
+                Action: cloudformation:*
+                Resource: !Sub "arn:aws:cloudformation:*:${AWS::AccountId}:stack/${!aws:PrincipalTag/action-platform:prefix}*"
+              - Sid: StackReads
+                Effect: Allow
+                Action:
+                  - cloudformation:ListStacks
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:CreateChangeSet
+                Resource: "*"
+              - Sid: OwnFunctions
+                Effect: Allow
+                Action: lambda:*
+                Resource:
+                  - !Sub "arn:aws:lambda:*:${AWS::AccountId}:function:${!aws:PrincipalTag/action-platform:prefix}*"
+                  - !Sub "arn:aws:lambda:*:${AWS::AccountId}:layer:${!aws:PrincipalTag/action-platform:prefix}*"
+              - Sid: PublicLayers
+                Effect: Allow
+                Action: lambda:GetLayerVersion
+                Resource: arn:aws:lambda:*:753240598075:layer:LambdaAdapterLayer*:*
+              - Sid: ApiGateway
+                Effect: Allow
+                Action: apigateway:*
+                Resource: arn:aws:apigateway:*::/*
+              - Sid: OwnLogs
+                Effect: Allow
+                Action: logs:*
+                Resource: !Sub "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/lambda/${!aws:PrincipalTag/action-platform:prefix}*"
+              - Sid: CreateExecutionRoleWithinTheBoundary
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:PutRolePermissionsBoundary
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${!aws:PrincipalTag/action-platform:prefix}-*"
+                Condition:
+                  StringEquals:
+                    iam:PermissionsBoundary: !Ref Boundary
+                  StringEqualsIfExists:
+                    aws:RequestTag/action-platform:prefix: "${aws:PrincipalTag/action-platform:prefix}"
+              - Sid: TagExecutionRoleWithItsOwnPrefix
+                Effect: Allow
+                Action: iam:TagRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${!aws:PrincipalTag/action-platform:prefix}-*"
+                Condition:
+                  StringEqualsIfExists:
+                    aws:RequestTag/action-platform:prefix: "${aws:PrincipalTag/action-platform:prefix}"
+              - Sid: ManageExecutionRole
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:DeleteRole
+                  - iam:UntagRole
+                  - iam:ListRoleTags
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${!aws:PrincipalTag/action-platform:prefix}-*"
+              - Sid: PassExecutionRoleToLambda
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${!aws:PrincipalTag/action-platform:prefix}-*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: lambda.amazonaws.com
+              - Sid: ReadinessSimulatesItself
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:SimulatePrincipalPolicy
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/action-platform/ActionPlatformDeploy"
+              - Sid: SamBucketStack
+                Effect: Allow
+                Action: cloudformation:*
+                Resource: !Sub "arn:aws:cloudformation:*:${AWS::AccountId}:stack/aws-sam-cli-managed-default*"
+              - Sid: SamBucket
+                Effect: Allow
+                Action: s3:*
+                Resource:
+                  - arn:aws:s3:::aws-sam-cli-managed-default-*
+                  - arn:aws:s3:::aws-sam-cli-managed-default-*/*
+
+Outputs:
+  DeployRoleArn:
+    Description: Paste on the platform - Plugins, AWS Lambda, Configure, Deploy role ARN
+    Value: !GetAtt DeployRole.Arn
+  BoundaryArn:
+    Value: !Ref Boundary

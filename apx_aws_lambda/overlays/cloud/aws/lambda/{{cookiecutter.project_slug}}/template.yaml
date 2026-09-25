@@ -18,10 +18,15 @@ Parameters:
     Type: String
     Default: ''
     Description: An existing execution role (the deploy proxy creates one per app). Empty lets SAM create it.
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ''
+    Description: The boundary the execution role SAM creates must carry (a connected account's ActionPlatformAppBoundary). Empty sets none.
 
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
   HasExecutionRole: !Not [!Equals [!Ref ExecutionRoleArn, '']]
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
   HasCustomDomain: !Not [!Equals [!Ref DomainCertificateArn, '']]
 
 Globals:
@@ -61,6 +66,7 @@ Resources:
 {%- endif %}
 {%- endif %}
       Role: !If [HasExecutionRole, !Ref ExecutionRoleArn, !Ref AWS::NoValue]
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Layers:
         - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:25
       Environment:

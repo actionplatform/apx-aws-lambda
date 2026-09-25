@@ -25,7 +25,7 @@ build-backend = "setuptools.build_meta"
 include = ["apx_aws_lambda*"]
 
 [tool.setuptools.package-data]
-apx_aws_lambda = ["overlays/**/*", "overlays/**/.*", "overlays/**/.github/workflows/*"]
+apx_aws_lambda = ["overlays/**/*", "overlays/**/.*", "overlays/**/.github/workflows/*", "connect/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "proxy/tests"]

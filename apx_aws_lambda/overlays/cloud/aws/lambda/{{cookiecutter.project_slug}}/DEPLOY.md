@@ -24,7 +24,7 @@ sam deploy                     # dev stack
 sam deploy --config-env prod   # prod stack
 ```
 
-Through the platform's deploy proxy the stack is named `ap-<org>-<project>-<app>-<scope>` (`Stage` takes the scope's name) and `--stack-name` is set by the target; `samconfig.toml`'s `stack_name` only matters for a deploy from a machine.
+Through a connected AWS account or the platform's deploy proxy the stack is named `ap-<org>-<project>-<app>-<scope>` (`Stage` takes the scope's name) and `--stack-name` is set by the target; `samconfig.toml`'s `stack_name` only matters for a deploy from a machine.
 
 ## CI
 
