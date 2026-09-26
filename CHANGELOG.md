@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.0 — 2026-09-25
+
+### Breaking Changes
+- remove the deploy proxy
+
+### Features
+- **connect:** deploy through an IAM-only stack instead of the proxy
+
 ## v0.5.0 — 2026-09-19
 
 ### Features
