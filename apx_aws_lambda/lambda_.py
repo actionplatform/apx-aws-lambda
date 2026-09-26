@@ -1,6 +1,6 @@
 """`aws/lambda`: a SAM stack per stage. Deploy = `sam build` + `sam deploy --config-env <stage>`; rollback = CloudFormation rollback to the previous stack state; diagnose = stack status and the HTTP API url.
 
-Credentials, in order: `proxy_url` + `app` under `[deploy]` — the deploy proxy in the account exchanges a platform token for the app's deploy-role credentials; `role_arn` — the target assumes that role with the same token (`sts assume-role-with-web-identity`); neither — the AWS CLI's own chain (profile, SSO, instance role). No access key anywhere."""
+Credentials, in order: `proxy_url` + `app` under `[deploy]` — the deploy proxy in the account exchanges a platform token for the app's deploy-role credentials; `role_arn` — the target assumes that role with the same token (`sts assume-role-with-web-identity`); the organization's connected account (`AP_AWS_LAMBDA_ROLE_ARN` with `AP_APP`) — the deploy role the connect stack made, scoped to the app by the token's session tag; the organization's proxy (`AP_AWS_LAMBDA_PROXY_URL`); none — the AWS CLI's own chain (profile, SSO, instance role). No access key anywhere."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ from action_platform.remote.client import Remote
 
 from apx_aws_lambda import shell
 from apx_aws_lambda.proxy import ProxyClient, ProxyRefused
+
+BOUNDARY = "policy/action-platform/ActionPlatformAppBoundary"
+PREFIX_TAG = "action-platform:prefix"
 
 
 class LambdaTarget(DeployTarget):
@@ -59,21 +62,48 @@ class LambdaTarget(DeployTarget):
 
         return ProxyClient(url, app)
 
+    def connected(self, ctx: Context) -> tuple[str, str] | None:
+        """The organization's connected account — the deploy role its connect stack made (`AP_AWS_LAMBDA_ROLE_ARN`) and the app's prefix from `AP_APP` — unless `[deploy]` names a proxy or a role of its own."""
+        if self.proxy_url or self.role_arn:
+            return None
+
+        role = ctx.env.get("AP_AWS_LAMBDA_ROLE_ARN") or os.environ.get(
+            "AP_AWS_LAMBDA_ROLE_ARN"
+        )
+
+        if not role:
+            return None
+
+        app = self.app or ctx.env.get("AP_APP") or os.environ.get("AP_APP", "")
+        parts = app.strip("/").split("/")
+
+        if len(parts) != 3 or not all(parts):
+            raise DeployError(
+                f"the organization's AWS account is connected, but the app is not known as <org>/<project>/<app> (got {app!r}): deploy from the platform"
+            )
+
+        return role, "ap-" + "-".join(parts)
+
     def env(self, ctx: Context) -> dict[str, str] | None:
-        """The environment `aws` and `sam` run with: the proxy's credentials, else temporary credentials from `role_arn`, else the caller's own."""
+        """The environment `aws` and `sam` run with: the proxy's credentials, else temporary credentials from `role_arn` or the connected account's deploy role, else the caller's own."""
         if self._env is not None:
             return self._env
 
-        proxy = self.proxy(ctx)
+        connected = self.connected(ctx)
+        proxy = self.proxy(ctx) if connected is None else None
 
-        if proxy is None and not self.role_arn:
+        if proxy is None and connected is None and not self.role_arn:
             return None
 
-        granted = (
-            proxy.env(ctx, self.region)
-            if proxy is not None
-            else assume_role(ctx, self.role_arn or "", self.session_name, self.region)
-        )
+        if proxy is not None:
+            granted = proxy.env(ctx, self.region)
+        elif connected is not None:
+            granted = connected_env(ctx, *connected, self.session_name, self.region)
+        else:
+            granted = assume_role(
+                ctx, self.role_arn or "", self.session_name, self.region
+            )
+
         self._env = {**os.environ, **granted}
 
         return self._env
@@ -112,7 +142,7 @@ class LambdaTarget(DeployTarget):
         return stack
 
     def _overrides(self, ctx: Context, env: dict[str, str] | None) -> list[str]:
-        """`--parameter-overrides`: the stage's own from samconfig.toml, then Stage set to the scope's name and the execution role the proxy granted — the CLI flag replaces the file's, so they all go together."""
+        """`--parameter-overrides`: the stage's own from samconfig.toml, then Stage set to the scope's name, the execution role the proxy granted and the boundary of a connected account — the CLI flag replaces the file's, so they all go together."""
         params = (
             self._samconfig(ctx)
             .get(self._stage(ctx), {})
@@ -122,7 +152,9 @@ class LambdaTarget(DeployTarget):
         own = [
             item
             for item in str(params.get("parameter_overrides") or "").split()
-            if not item.startswith(("Stage=", "ExecutionRoleArn="))
+            if not item.startswith(
+                ("Stage=", "ExecutionRoleArn=", "PermissionsBoundaryArn=")
+            )
         ]
         own.append(f"Stage={ctx.stage}")
         role = (env or {}).get("AP_EXECUTION_ROLE")
@@ -130,7 +162,32 @@ class LambdaTarget(DeployTarget):
         if role:
             own.append(f"ExecutionRoleArn={role}")
 
+        boundary = (env or {}).get("AP_BOUNDARY")
+
+        if boundary:
+            own.append(f"PermissionsBoundaryArn={boundary}")
+
         return ["--parameter-overrides", " ".join(own)]
+
+    def _tags(self, ctx: Context, env: dict[str, str] | None) -> list[str]:
+        """`--tags` for a connected account: the stage's own from samconfig.toml plus the app's prefix, which the stack hands to the execution role it creates — the tag the boundary scopes that role by."""
+        if not (env or {}).get("AP_BOUNDARY"):
+            return []
+
+        params = (
+            self._samconfig(ctx)
+            .get(self._stage(ctx), {})
+            .get("deploy", {})
+            .get("parameters", {})
+        )
+        own = [
+            item
+            for item in str(params.get("tags") or "").split()
+            if not item.startswith(f"{PREFIX_TAG}=")
+        ]
+        own.append(f"{PREFIX_TAG}={env['AP_STACK_PREFIX']}")
+
+        return ["--tags", " ".join(own)]
 
     def _region(self, ctx: Context) -> str | None:
         params = (
@@ -207,17 +264,35 @@ class LambdaTarget(DeployTarget):
                     "aws.credentials",
                     False,
                     str(e),
-                    fix="connect the deploy proxy or a role for this app in the AWS Lambda plugin",
+                    fix="connect the AWS account (or the deploy proxy) in the AWS Lambda plugin",
                 )
             )
 
             return checks
+
+        if (env or {}).get("AP_BOUNDARY"):
+            checks.append(self._boundary_parameter(ctx))
 
         checks.append(self._stack_state(ctx))
         checks.extend(self._permissions(ctx, env, identity, stack))
         checks.append(self._template_valid(ctx, env))
 
         return checks
+
+    def _boundary_parameter(self, ctx: Context) -> Check:
+        text = (ctx.repo_root / "template.yaml").read_text(errors="replace")
+
+        if "PermissionsBoundaryArn" in text:
+            return Check(
+                "template.boundary", True, "the execution role takes the boundary"
+            )
+
+        return Check(
+            "template.boundary",
+            False,
+            "template.yaml has no PermissionsBoundaryArn parameter: a connected account creates the execution role only within its boundary",
+            fix="apply the aws/lambda overlay again: action-platform cloud set aws/lambda",
+        )
 
     def _stack_state(self, ctx: Context) -> Check:
         status = self._status(ctx)
@@ -287,6 +362,22 @@ class LambdaTarget(DeployTarget):
         if execution:
             wanted.append((["iam:PassRole"], [execution]))
 
+        boundary = (env or {}).get("AP_BOUNDARY")
+        context: list[str] = []
+
+        if boundary:
+            wanted.append(
+                (
+                    ["iam:CreateRole"],
+                    [f"arn:aws:iam::{account}:role/{stack}-ApiFunctionRole"],
+                )
+            )
+            context = [
+                "--context-entries",
+                f"ContextKeyName=aws:PrincipalTag/{PREFIX_TAG},ContextKeyValues={env['AP_STACK_PREFIX']},ContextKeyType=string",
+                f"ContextKeyName=iam:PermissionsBoundary,ContextKeyValues={boundary},ContextKeyType=string",
+            ]
+
         denied: list[str] = []
 
         for actions, resources in wanted:
@@ -300,6 +391,7 @@ class LambdaTarget(DeployTarget):
                     *actions,
                     "--resource-arns",
                     *resources,
+                    *context,
                     env=env,
                 )
             except DeployError as e:
@@ -324,7 +416,7 @@ class LambdaTarget(DeployTarget):
                     "aws.permissions",
                     False,
                     f"{role} may not: " + "; ".join(denied),
-                    fix="widen the deploy role's policy (redeploy the deploy proxy when it created the role)",
+                    fix="widen the deploy role's policy (update the connect stack, or redeploy the deploy proxy, when it created the role)",
                 )
             ]
 
@@ -416,6 +508,7 @@ class LambdaTarget(DeployTarget):
             args += ["--config-env", stage]
 
         args += self._overrides(ctx, env)
+        args += self._tags(ctx, env)
         shell.run(args, cwd=ctx.repo_root, env=env)
         url = self._url(ctx)
 
@@ -524,6 +617,20 @@ def _role_of(arn: str) -> str | None:
     found = re.match(r"^arn:aws:sts::(\d+):assumed-role/([^/]+)/", arn)
 
     return f"arn:aws:iam::{found.group(1)}:role/{found.group(2)}" if found else None
+
+
+def connected_env(
+    ctx: Context, role_arn: str, prefix: str, session_name: str, region: str | None
+) -> dict[str, str]:
+    """The connected account's deploy role, assumed with the platform's token for this app — whose session tag is `prefix` — plus what the deploy needs to stay inside it: the stack prefix, the role to simulate, the boundary the execution role takes."""
+    account = role_arn.split(":")[4] if role_arn.count(":") >= 5 else ""
+
+    return {
+        **assume_role(ctx, role_arn, session_name, region),
+        "AP_STACK_PREFIX": prefix,
+        "AP_DEPLOY_ROLE": role_arn,
+        "AP_BOUNDARY": f"arn:aws:iam::{account}:{BOUNDARY}",
+    }
 
 
 def assume_role(

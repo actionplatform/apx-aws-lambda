@@ -1,6 +1,6 @@
 # apx-aws-lambda
 
-AWS Lambda for [Action Platform](https://github.com/actionplatform/action-platform): the `aws/lambda` deploy target (SAM), its overlay, read-only tools and commands, and a **deploy proxy** for your AWS account so that no AWS key ever lives on the platform, on a machine or in a repository. `apx-` is the prefix every Action Platform extension carries.
+AWS Lambda for [Action Platform](https://github.com/actionplatform/action-platform): the `aws/lambda` deploy target (SAM), its overlay, read-only tools and commands, and an IAM-only **connect stack** for your AWS account so that no AWS key ever lives on the platform, on a machine or in a repository — and nothing of ours runs in the account. `apx-` is the prefix every Action Platform extension carries.
 
 ```bash
 action-platform plugin install aws-lambda
@@ -14,7 +14,8 @@ action-platform diagnose
 
 - [What the plugin does](#what-the-plugin-does)
 - [Credentials without keys](#credentials-without-keys)
-  - [The deploy proxy (recommended)](#the-deploy-proxy-recommended)
+  - [A connected account (recommended)](#a-connected-account-recommended)
+  - [The deploy proxy](#the-deploy-proxy)
   - [A role of your own (OIDC)](#a-role-of-your-own-oidc)
   - [The AWS CLI's own credentials](#the-aws-clis-own-credentials)
 - [Where the deploy runs](#where-the-deploy-runs)
@@ -34,7 +35,7 @@ action-platform diagnose
 | Diagnose | stack status and the HTTP API url |
 | Destroy | `sam delete` of the stage's stack; when no stage is left, the app leaves the proxy too (roles and grant) — the token must carry `org.manage`, which a platform deploy by an organization manager does |
 | Tools | `aws_lambda_stacks`, `aws_lambda_functions` |
-| Commands | `action-platform aws-lambda stacks\|functions`, `action-platform aws-lambda proxy …` |
+| Commands | `action-platform aws-lambda connect\|stacks\|functions`, `action-platform aws-lambda proxy …` |
 
 `[deploy]` in `platform.toml`:
 
@@ -52,11 +53,37 @@ The target looks for credentials in this order:
 
 | Under `[deploy]` | How | Who decides what the app may do |
 |---|---|---|
-| `proxy_url` + `app` — or the organization's proxy url set on the platform (Plugins → AWS Lambda), which every deploy job carries as `AP_AWS_LAMBDA_PROXY_URL` with `AP_APP` | the deploy proxy in your account exchanges a platform token for the app's deploy-role credentials | the proxy's grants, in your account |
+| `proxy_url` + `app` — or the organization's proxy url set on the platform, which every deploy job carries as `AP_AWS_LAMBDA_PROXY_URL` with `AP_APP` | the deploy proxy in your account exchanges a platform token for the app's deploy-role credentials | the proxy's grants, in your account |
 | `role_arn` | `sts assume-role-with-web-identity` with a platform token | the role's trust and permission policies |
-| neither | the AWS CLI's own chain: SSO, profile, instance role | whatever that identity may do |
+| neither, and the organization's deploy role set on the platform (Plugins → AWS Lambda), which every deploy job carries as `AP_AWS_LAMBDA_ROLE_ARN` with `AP_APP` | `sts assume-role-with-web-identity` on the connect stack's role with the platform's token for the app | the token's session tag and the role's policy, in your account |
+| neither, and the organization's proxy url | as the first row | the proxy's grants |
+| none of these | the AWS CLI's own chain: SSO, profile, instance role | whatever that identity may do |
 
-### The deploy proxy (recommended)
+### A connected account (recommended)
+
+One CloudFormation stack, IAM only — no function, no table, nothing to upgrade. AWS itself trusts the platform's OIDC tokens; the token's session tag keeps each deploy inside its app.
+
+**1. Create the stack** — once per AWS account, with your own AWS credentials (not the root account). Either in the console: CloudFormation → Create stack → *Upload a template file* → [`apx_aws_lambda/connect/template.yaml`](apx_aws_lambda/connect/template.yaml), parameters `IssuerUrl` (the platform's public url) and `Organization` (its slug), acknowledge IAM; or from a machine:
+
+```bash
+action-platform aws-lambda connect https://platform.example.com acme      # --region, --stack-name, --oidc-provider-arn
+```
+
+**2. Tell the platform** — Plugins → AWS Lambda → Configure → **Deploy role ARN** = the stack's `DeployRoleArn` output. Every app of the organization whose `platform.toml` says `target = "aws/lambda"` deploys from then on; nothing to register per app.
+
+What the stack creates:
+
+| Resource | Purpose |
+|---|---|
+| IAM OIDC provider | trusts `IssuerUrl` for audience `sts.amazonaws.com`; pass `OidcProviderArn` when the account already has one for the platform |
+| `ActionPlatformAppBoundary` (`/action-platform/`) | the cap on every execution role an app's stack creates — the same statements as the proxy's boundary, scoped by the role's `action-platform:prefix` tag |
+| `ActionPlatformDeploy` role (`/action-platform/`) | trust: `AssumeRoleWithWebIdentity` for `sub` `org:<org>:*`, and `TagSession` only for the one tag `action-platform:prefix` with a value `ap-<org>-*`. Policy: every resource under `${aws:PrincipalTag/action-platform:prefix}` — CloudFormation stacks, Lambda, logs; API Gateway; the public Lambda Web Adapter layers; SAM's bucket; `iam:CreateRole` on `<prefix>-*` only with the boundary attached and the app's own prefix tag, `iam:PassRole` of those roles to Lambda only; `iam:SimulatePrincipalPolicy` on itself |
+
+How a deploy runs: the platform signs a token for the app with the claim `https://aws.amazon.com/tags` → `principal_tags.action-platform:prefix = ap-<org>-<project>-<app>`; the target assumes the deploy role with it, names the stack `ap-<org>-<project>-<app>-dev|prod`, passes `PermissionsBoundaryArn` to the overlay's template and tags the stack with the prefix, so the execution role SAM creates carries both the boundary and the tag. `sam delete` removes that role with the stack. Who may deploy which app is the platform's decision — it only signs a token for an app the job or the caller is for.
+
+Readiness simulates the deploy role with the session tag and the boundary as context entries, and flags an overlay without the `PermissionsBoundaryArn` parameter (apply the overlay again). The stack's policy is the one place to widen or narrow what deploys may do: edit and update the stack.
+
+### The deploy proxy
 
 `proxy/` is a small SAM application you install **once per AWS account**. It decides who may deploy which app and hands out 15–60 minute credentials of that app's deploy role. It holds no platform secret — it verifies the platform's OIDC tokens against `https://<platform>/.well-known/jwks.json` — and the platform holds no AWS key.
 

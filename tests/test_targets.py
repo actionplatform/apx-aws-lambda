@@ -359,6 +359,150 @@ class AssumeRoleTest(unittest.TestCase):
         self.assertIn("log in", str(caught.exception))
 
 
+class ConnectedAccountTest(unittest.TestCase):
+    ROLE = "arn:aws:iam::123456789012:role/action-platform/ActionPlatformDeploy"
+    BOUNDARY = (
+        "arn:aws:iam::123456789012:policy/action-platform/ActionPlatformAppBoundary"
+    )
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "samconfig.toml").write_text(
+            SAMCONFIG.replace(
+                'stack_name = "shop-dev"',
+                'stack_name = "shop-dev"\n'
+                'parameter_overrides = "Stage=dev DomainName="\n'
+                'tags = "Project=shop Environment=dev"',
+            )
+        )
+        (self.root / "template.yaml").write_text(
+            "Parameters:\n  PermissionsBoundaryArn:\n    Type: String\n"
+        )
+        self.calls: list[list[str]] = []
+        self.addCleanup(self.tmp.cleanup)
+
+    def run_fake(self, args, cwd=None, env=None):
+        self.calls.append([Path(args[0]).name, *args[1:]])
+        key = " ".join(args[1:3])
+
+        if key == "sts assume-role-with-web-identity":
+            return json.dumps(
+                {
+                    "Credentials": {
+                        "AccessKeyId": "AKIA",
+                        "SecretAccessKey": "s",
+                        "SessionToken": "t",
+                    }
+                }
+            )
+
+        if key == "sts get-caller-identity":
+            return json.dumps(
+                {
+                    "Account": "123456789012",
+                    "Arn": "arn:aws:sts::123456789012:assumed-role/ActionPlatformDeploy/action-platform",
+                }
+            )
+
+        if key == "cloudformation describe-stacks":
+            return json.dumps({"Stacks": [{"StackStatus": "UPDATE_COMPLETE"}]})
+
+        if key == "iam simulate-principal-policy":
+            return json.dumps({"EvaluationResults": []})
+
+        return "{}"
+
+    def ctx(self, app="acme/shop/orders"):
+        env = {"AP_AWS_LAMBDA_ROLE_ARN": self.ROLE}
+
+        if app is not None:
+            env["AP_APP"] = app
+
+        return Context(
+            repo_root=self.root,
+            stage="dev",
+            env=env,
+            identity=lambda aud: f"jwt-for-{aud}",
+        )
+
+    def patched(self):
+        return mock.patch.multiple(
+            shell, run=self.run_fake, require=lambda t, h: [f"/usr/bin/{t}"]
+        )
+
+    def test_a_deploy_assumes_the_deploy_role_and_stays_inside_the_app(self):
+        with self.patched():
+            LambdaTarget().deploy(self.ctx())
+
+        sts = next(
+            c for c in self.calls if c[1:3] == ["sts", "assume-role-with-web-identity"]
+        )
+        self.assertIn(self.ROLE, sts)
+        self.assertIn("jwt-for-sts.amazonaws.com", sts)
+        deploy = next(c for c in self.calls if c[:2] == ["sam", "deploy"])
+        self.assertEqual(
+            deploy[deploy.index("--stack-name") + 1], "ap-acme-shop-orders-dev"
+        )
+        self.assertEqual(
+            deploy[deploy.index("--parameter-overrides") + 1],
+            f"DomainName= Stage=dev PermissionsBoundaryArn={self.BOUNDARY}",
+        )
+        self.assertEqual(
+            deploy[deploy.index("--tags") + 1],
+            "Project=shop Environment=dev action-platform:prefix=ap-acme-shop-orders",
+        )
+
+    def test_readiness_simulates_with_the_session_tag_and_the_boundary(self):
+        with self.patched():
+            checks = {c.id: c for c in LambdaTarget().readiness(self.ctx())}
+
+        self.assertTrue(checks["template.boundary"].ok)
+        self.assertTrue(checks["aws.permissions"].ok, checks["aws.permissions"].detail)
+        simulated = [
+            c for c in self.calls if c[1:3] == ["iam", "simulate-principal-policy"]
+        ]
+        self.assertTrue(simulated)
+
+        for args in simulated:
+            self.assertEqual(args[args.index("--policy-source-arn") + 1], self.ROLE)
+            self.assertIn(
+                "ContextKeyName=aws:PrincipalTag/action-platform:prefix,"
+                "ContextKeyValues=ap-acme-shop-orders,ContextKeyType=string",
+                args,
+            )
+
+        self.assertTrue(any("iam:CreateRole" in args for args in simulated))
+
+    def test_readiness_flags_an_overlay_without_the_boundary_parameter(self):
+        (self.root / "template.yaml").write_text("Resources: {}\n")
+
+        with self.patched():
+            checks = {c.id: c for c in LambdaTarget().readiness(self.ctx())}
+
+        self.assertFalse(checks["template.boundary"].ok)
+
+    def test_a_role_of_the_repository_wins_over_the_connected_account(self):
+        target = LambdaTarget(role_arn="arn:aws:iam::1:role/own")
+
+        self.assertIsNone(target.connected(self.ctx()))
+
+    def test_without_the_app_it_says_so(self):
+        with self.assertRaises(DeployError) as caught:
+            LambdaTarget().connected(self.ctx(app=None))
+
+        self.assertIn("<org>/<project>/<app>", str(caught.exception))
+
+    def test_the_connect_template_ships_with_the_plugin(self):
+        from apx_aws_lambda.cli import CONNECT_TEMPLATE
+
+        text = CONNECT_TEMPLATE.read_text()
+
+        self.assertIn("ActionPlatformDeploy", text)
+        self.assertIn("ActionPlatformAppBoundary", text)
+        self.assertIn("aws:RequestTag/action-platform:prefix", text)
+
+
 class ModuleEnvTest(unittest.TestCase):
     def test_the_child_gets_the_given_env_with_telemetry_off(self):
         env = shell.module_env({"PATH": "/bin"})

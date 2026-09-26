@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 from action_platform.core.exception import ActionPlatformError
 from rich.console import Console
@@ -11,13 +13,15 @@ from apx_aws_lambda import shell
 from apx_aws_lambda.proxy import ProxyClient
 
 app = typer.Typer(
-    help="AWS Lambda: stacks, functions, the deploy proxy.", no_args_is_help=True
+    help="AWS Lambda: connect an account, stacks, functions, the deploy proxy.",
+    no_args_is_help=True,
 )
 proxy_app = typer.Typer(
     help="The deploy proxy in your account: apps and grants.", no_args_is_help=True
 )
 app.add_typer(proxy_app, name="proxy")
 console = Console()
+CONNECT_TEMPLATE = Path(__file__).parent / "connect" / "template.yaml"
 
 
 def _table(columns: list[str], rows: list[list[str]]) -> None:
@@ -30,6 +34,50 @@ def _table(columns: list[str], rows: list[list[str]]) -> None:
         table.add_row(*r)
 
     console.print(table)
+
+
+@app.command("connect")
+def connect(
+    issuer: str = typer.Argument(..., help="The platform's public url"),
+    organization: str = typer.Argument(..., help="The organization slug"),
+    region: str = typer.Option("us-east-1", help="Region the stack lives in"),
+    stack_name: str = typer.Option("action-platform-connect"),
+    oidc_provider_arn: str = typer.Option(
+        "", help="An IAM OIDC provider for the platform that already exists"
+    ),
+) -> None:
+    """Connect the AWS account the CLI is logged in to: the IAM-only stack, once."""
+    shell.run(
+        [
+            *shell.require("aws", "https://aws.amazon.com/cli/"),
+            "cloudformation",
+            "deploy",
+            "--template-file",
+            str(CONNECT_TEMPLATE),
+            "--stack-name",
+            stack_name,
+            "--region",
+            region,
+            "--capabilities",
+            "CAPABILITY_NAMED_IAM",
+            "--no-fail-on-empty-changeset",
+            "--parameter-overrides",
+            f"IssuerUrl={issuer.rstrip('/')}",
+            f"Organization={organization}",
+            f"OidcProviderArn={oidc_provider_arn}",
+        ]
+    )
+    data = shell.aws(
+        "cloudformation", "describe-stacks", "--stack-name", stack_name, region=region
+    )
+    outputs = {
+        o["OutputKey"]: o["OutputValue"]
+        for o in (data.get("Stacks") or [{}])[0].get("Outputs") or []
+    }
+    console.print(f"[bold]DeployRoleArn[/bold]  {outputs.get('DeployRoleArn', '-')}")
+    console.print(
+        "On the platform: Plugins → AWS Lambda → Configure → Deploy role ARN."
+    )
 
 
 @app.command("stacks")
