@@ -55,6 +55,11 @@ class LambdaTarget(DeployTarget):
         if not role:
             return None
 
+        if re.fullmatch(r"\d{12}", role.strip()):
+            role = (
+                f"arn:aws:iam::{role.strip()}:role/action-platform/ActionPlatformDeploy"
+            )
+
         app = self.app or ctx.env.get("AP_APP") or os.environ.get("AP_APP", "")
         parts = app.strip("/").split("/")
 

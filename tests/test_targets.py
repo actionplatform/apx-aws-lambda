@@ -9,7 +9,7 @@ from unittest import mock
 
 from action_platform.core.context import Context
 from action_platform.core.exception import DeployError
-from action_platform.core.scaffold.templates import Matrix, with_plugin_clouds
+from action_platform.core.scaffold.catalog import Matrix, with_plugin_clouds
 from action_platform.plugins import Loaded, Plugins, PluginState, registry
 
 from apx_aws_lambda import AwsLambdaPlugin, shell
@@ -477,6 +477,26 @@ class ConnectedAccountTest(unittest.TestCase):
             checks = {c.id: c for c in LambdaTarget().readiness(self.ctx())}
 
         self.assertFalse(checks["template.boundary"].ok)
+
+    def test_an_account_id_names_the_connect_stacks_role(self):
+        ctx = self.ctx()
+        ctx.env["AP_AWS_LAMBDA_ROLE_ARN"] = "123456789012"
+
+        self.assertEqual(
+            LambdaTarget().connected(ctx), (self.ROLE, "ap-acme-shop-orders")
+        )
+
+    def test_the_connect_command_fills_in_the_platform_and_the_organization(self):
+        from apx_aws_lambda.plugin import AwsLambdaPlugin
+
+        option = AwsLambdaPlugin.options[0]
+
+        self.assertIn("cloudshell", option.action_url)
+        self.assertIn("aws cloudformation deploy", option.action_copy)
+        self.assertIn(
+            "IssuerUrl={issuer} Organization={organization}", option.action_copy
+        )
+        self.assertIn("connect/template.yaml", option.action_copy)
 
     def test_a_role_of_the_repository_wins_over_the_connected_account(self):
         target = LambdaTarget(role_arn="arn:aws:iam::1:role/own")
