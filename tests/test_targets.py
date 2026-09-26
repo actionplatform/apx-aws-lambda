@@ -155,7 +155,6 @@ class LambdaTargetTest(unittest.TestCase):
         target = LambdaTarget(region="us-east-1")
         target._env = {
             "AP_DEPLOY_ROLE": "arn:aws:iam::1:role/action-platform/ap-deploy-x",
-            "AP_EXECUTION_ROLE": "arn:aws:iam::1:role/action-platform/ap-exec-x",
             "AP_STACK_PREFIX": "ap-x",
         }
         simulated: list[list[str]] = []
@@ -211,10 +210,6 @@ class LambdaTargetTest(unittest.TestCase):
         self.assertIn("lambda:GetLayerVersion", checks["aws.permissions"].detail)
         self.assertIn("LambdaAdapterLayerArm64:25", checks["aws.permissions"].detail)
         self.assertTrue(checks["template.valid"].ok)
-        self.assertTrue(
-            any("iam:PassRole" in args for args in simulated),
-            "the execution role's PassRole is simulated",
-        )
         self.assertNotIn(["sam", "build"], [c[:2] for c in self.calls])
 
     def test_readiness_flags_a_stack_with_an_operation_in_progress(self):
@@ -473,6 +468,7 @@ class ConnectedAccountTest(unittest.TestCase):
             )
 
         self.assertTrue(any("iam:CreateRole" in args for args in simulated))
+        self.assertTrue(any("iam:PassRole" in args for args in simulated))
 
     def test_readiness_flags_an_overlay_without_the_boundary_parameter(self):
         (self.root / "template.yaml").write_text("Resources: {}\n")

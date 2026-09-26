@@ -14,10 +14,6 @@ Parameters:
     Type: String
     Default: ''
     Description: ACM certificate ARN for DomainName, same region. Empty skips the custom domain.
-  ExecutionRoleArn:
-    Type: String
-    Default: ''
-    Description: An existing execution role (the deploy proxy creates one per app). Empty lets SAM create it.
   PermissionsBoundaryArn:
     Type: String
     Default: ''
@@ -25,7 +21,6 @@ Parameters:
 
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
-  HasExecutionRole: !Not [!Equals [!Ref ExecutionRoleArn, '']]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
   HasCustomDomain: !Not [!Equals [!Ref DomainCertificateArn, '']]
 
@@ -65,7 +60,6 @@ Resources:
       Runtime: java21
 {%- endif %}
 {%- endif %}
-      Role: !If [HasExecutionRole, !Ref ExecutionRoleArn, !Ref AWS::NoValue]
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Layers:
         - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:25
