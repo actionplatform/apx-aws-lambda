@@ -18,6 +18,10 @@ Parameters:
     Type: String
     Default: ''
     Description: The boundary the execution role SAM creates must carry (a connected account's ActionPlatformAppBoundary). Empty sets none.
+  RolePath:
+    Type: String
+    Default: /
+    Description: IAM path of the execution role SAM creates (a connected account's /action-platform/<prefix>/).
 
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
@@ -61,6 +65,7 @@ Resources:
 {%- endif %}
 {%- endif %}
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      RolePath: !Ref RolePath
       Layers:
         - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:25
       Environment:

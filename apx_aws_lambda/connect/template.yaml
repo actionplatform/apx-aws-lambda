@@ -156,7 +156,7 @@ Resources:
                 Action:
                   - iam:CreateRole
                   - iam:PutRolePermissionsBoundary
-                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${!aws:PrincipalTag/action-platform:prefix}-*"
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/action-platform/${!aws:PrincipalTag/action-platform:prefix}/*"
                 Condition:
                   StringEquals:
                     iam:PermissionsBoundary: !Ref Boundary
@@ -165,7 +165,7 @@ Resources:
               - Sid: TagExecutionRoleWithItsOwnPrefix
                 Effect: Allow
                 Action: iam:TagRole
-                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${!aws:PrincipalTag/action-platform:prefix}-*"
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/action-platform/${!aws:PrincipalTag/action-platform:prefix}/*"
                 Condition:
                   StringEqualsIfExists:
                     aws:RequestTag/action-platform:prefix: "${aws:PrincipalTag/action-platform:prefix}"
@@ -183,11 +183,11 @@ Resources:
                   - iam:DeleteRolePolicy
                   - iam:ListRolePolicies
                   - iam:ListAttachedRolePolicies
-                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${!aws:PrincipalTag/action-platform:prefix}-*"
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/action-platform/${!aws:PrincipalTag/action-platform:prefix}/*"
               - Sid: PassExecutionRoleToLambda
                 Effect: Allow
                 Action: iam:PassRole
-                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${!aws:PrincipalTag/action-platform:prefix}-*"
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/action-platform/${!aws:PrincipalTag/action-platform:prefix}/*"
                 Condition:
                   StringEquals:
                     iam:PassedToService: lambda.amazonaws.com
