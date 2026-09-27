@@ -135,13 +135,14 @@ class LambdaTarget(DeployTarget):
         own = [
             item
             for item in str(params.get("parameter_overrides") or "").split()
-            if not item.startswith(("Stage=", "PermissionsBoundaryArn="))
+            if not item.startswith(("Stage=", "PermissionsBoundaryArn=", "RolePath="))
         ]
         own.append(f"Stage={ctx.stage}")
         boundary = (env or {}).get("AP_BOUNDARY")
 
         if boundary:
             own.append(f"PermissionsBoundaryArn={boundary}")
+            own.append(f"RolePath={role_path((env or {})['AP_STACK_PREFIX'])}")
 
         return ["--parameter-overrides", " ".join(own)]
 
@@ -258,7 +259,7 @@ class LambdaTarget(DeployTarget):
     def _boundary_parameter(self, ctx: Context) -> Check:
         text = (ctx.repo_root / "template.yaml").read_text(errors="replace")
 
-        if "PermissionsBoundaryArn" in text:
+        if "PermissionsBoundaryArn" in text and "RolePath" in text:
             return Check(
                 "template.boundary", True, "the execution role takes the boundary"
             )
@@ -266,7 +267,7 @@ class LambdaTarget(DeployTarget):
         return Check(
             "template.boundary",
             False,
-            "template.yaml has no PermissionsBoundaryArn parameter: a connected account creates the execution role only within its boundary",
+            "template.yaml lacks the PermissionsBoundaryArn or RolePath parameter: a connected account creates the execution role only within its boundary, under the app's path",
             fix="apply the aws/lambda overlay again: action-platform cloud set aws/lambda",
         )
 
@@ -337,7 +338,7 @@ class LambdaTarget(DeployTarget):
         context: list[str] = []
 
         if boundary:
-            execution = f"arn:aws:iam::{account}:role/{stack}-ApiFunctionRole"
+            execution = f"arn:aws:iam::{account}:role{role_path(env['AP_STACK_PREFIX'])}{stack}-ApiFunctionRole"
             wanted.append((["iam:CreateRole", "iam:PassRole"], [execution]))
             context = [
                 "--context-entries",
@@ -563,6 +564,11 @@ def _role_of(arn: str) -> str | None:
     found = re.match(r"^arn:aws:sts::(\d+):assumed-role/([^/]+)/", arn)
 
     return f"arn:aws:iam::{found.group(1)}:role/{found.group(2)}" if found else None
+
+
+def role_path(prefix: str) -> str:
+    """Where a connected account keeps an app's execution roles: CloudFormation cuts a generated role name to 64 characters, which can drop the prefix from it, so the app's roles are told apart by their IAM path instead."""
+    return f"/action-platform/{prefix}/"
 
 
 def connected_env(

@@ -373,6 +373,7 @@ class ConnectedAccountTest(unittest.TestCase):
         )
         (self.root / "template.yaml").write_text(
             "Parameters:\n  PermissionsBoundaryArn:\n    Type: String\n"
+            "  RolePath:\n    Type: String\n"
         )
         self.calls: list[list[str]] = []
         self.addCleanup(self.tmp.cleanup)
@@ -441,7 +442,8 @@ class ConnectedAccountTest(unittest.TestCase):
         )
         self.assertEqual(
             deploy[deploy.index("--parameter-overrides") + 1],
-            f"DomainName= Stage=dev PermissionsBoundaryArn={self.BOUNDARY}",
+            f"DomainName= Stage=dev PermissionsBoundaryArn={self.BOUNDARY}"
+            " RolePath=/action-platform/ap-acme-shop-orders/",
         )
         self.assertEqual(
             deploy[deploy.index("--tags") + 1],
