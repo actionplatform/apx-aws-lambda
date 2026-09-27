@@ -12,7 +12,7 @@ from action_platform.core.exception import DeployError
 from action_platform.core.scaffold.catalog import Matrix, with_plugin_clouds
 from action_platform.plugins import Loaded, Plugins, PluginState, registry
 
-from apx_aws_lambda import AwsLambdaPlugin, shell
+from apx_aws_lambda import AwsLambdaPlugin, health, shell
 from apx_aws_lambda.lambda_ import LambdaTarget
 
 SAMCONFIG = """version = 0.1
@@ -27,6 +27,10 @@ region = "us-east-1"
 
 class LambdaTargetTest(unittest.TestCase):
     def setUp(self):
+        patcher = mock.patch.object(health, "get", lambda url: 200)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
         self.tmp = TemporaryDirectory()
         self.root = Path(self.tmp.name)
         (self.root / "samconfig.toml").write_text(SAMCONFIG)
@@ -213,6 +217,32 @@ class LambdaTargetTest(unittest.TestCase):
             result.error,
             "ApiFunctionRole CREATE_FAILED: not authorized to perform: iam:CreateRole",
         )
+
+    def test_a_function_that_never_answers_fails_the_deploy(self):
+        stacks = {
+            "cloudformation describe-stacks": {
+                "Stacks": [
+                    {
+                        "StackStatus": "UPDATE_COMPLETE",
+                        "Outputs": [
+                            {"OutputKey": "ApiUrl", "OutputValue": "https://x"}
+                        ],
+                    }
+                ]
+            }
+        }
+
+        with (
+            self.fake(stacks),
+            mock.patch.object(health, "get", lambda url: 502),
+            mock.patch.object(health, "PAUSE", 0),
+        ):
+            result = LambdaTarget().deploy(self.ctx("dev"))
+            skipped = LambdaTarget(health="").deploy(self.ctx("dev"))
+
+        self.assertFalse(result.ok)
+        self.assertIn("https://x/health answered 502", result.error)
+        self.assertTrue(skipped.ok)
 
     def test_a_healthy_stack_is_left_alone(self):
         target = LambdaTarget()

@@ -42,6 +42,7 @@ action-platform diagnose
 [deploy]
 target = "aws/lambda"
 region = "us-east-1"          # optional; samconfig.toml / AWS_REGION otherwise
+health = "/health"            # optional; checked through the HTTP API after the deploy, "" skips it
 ```
 
 Deploying itself goes through the core's `deploy` / `rollback` / `diagnose`, which drive the target.
@@ -167,6 +168,7 @@ The tests fake `aws` and `sam`; nothing reaches AWS.
 | `credentials.py` | `Credentials`: `OwnRole` (`[deploy] role_arn`), `ConnectedAccount`, `CliChain` — which identity `aws` and `sam` act as |
 | `stack.py` | `Stack`: the CloudFormation stack — status, outputs, clearing a failed first creation, rollback |
 | `sam.py` | `Sam`: build, deploy, delete, validate |
+| `health.py` | `Health`: the function answers its health route after the deploy |
 | `checks.py` | `Readiness`: one class per check |
 | `shell.py` | running `aws` and `sam`, streaming `sam`'s output to the job log |
 | `tools.py`, `cli.py` | read-only views for MCP and the terminal; `connect` |
