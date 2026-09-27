@@ -131,6 +131,29 @@ class LambdaTargetTest(unittest.TestCase):
         )
         self.assertTrue(result.ok)
 
+    def test_a_stack_left_in_rollback_failed_is_deleted_before_the_deploy(self):
+        target = LambdaTarget()
+        statuses = iter(["ROLLBACK_FAILED", "UPDATE_COMPLETE"])
+
+        def run(args, cwd=None, env=None):
+            self.calls.append([Path(args[0]).name, *args[1:]])
+
+            if " ".join(args[1:3]) == "cloudformation describe-stacks":
+                return json.dumps(
+                    {"Stacks": [{"StackStatus": next(statuses), "Outputs": []}]}
+                )
+
+            return "{}"
+
+        with mock.patch.multiple(
+            shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
+        ):
+            target.deploy(self.ctx("dev"))
+
+        self.assertIn(
+            ["aws", "cloudformation", "delete-stack"], [c[:3] for c in self.calls]
+        )
+
     def test_a_healthy_stack_is_left_alone(self):
         target = LambdaTarget()
 
@@ -448,6 +471,19 @@ class ConnectedAccountTest(unittest.TestCase):
         self.assertEqual(
             deploy[deploy.index("--tags") + 1],
             "Project=shop Environment=dev action-platform:prefix=ap-acme-shop-orders",
+        )
+
+    def test_the_stack_is_named_after_the_scope(self):
+        ctx = self.ctx()
+        ctx.stage = "production"
+
+        with self.patched():
+            LambdaTarget().deploy(ctx)
+
+        deploy = next(c for c in self.calls if c[:2] == ["sam", "deploy"])
+        self.assertEqual(
+            deploy[deploy.index("--stack-name") + 1],
+            "ap-acme-shop-orders-production",
         )
 
     def test_readiness_simulates_with_the_session_tag_and_the_boundary(self):

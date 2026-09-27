@@ -17,6 +17,7 @@ from action_platform.remote.client import Remote
 from apx_aws_lambda import shell
 
 BOUNDARY = "policy/action-platform/ActionPlatformAppBoundary"
+FAILED_CREATION = ("ROLLBACK_COMPLETE", "ROLLBACK_FAILED")
 PREFIX_TAG = "action-platform:prefix"
 
 
@@ -109,7 +110,7 @@ class LambdaTarget(DeployTarget):
         prefix = (self.env(ctx) or {}).get("AP_STACK_PREFIX")
 
         if prefix:
-            return f"{prefix}-{'prod' if ctx.stage == 'prod' else 'dev'}"
+            return f"{prefix}-{ctx.stage or 'dev'}"
 
         params = (
             self._samconfig(ctx)
@@ -277,7 +278,7 @@ class LambdaTarget(DeployTarget):
         if status is None:
             return Check("stack.state", True, "no stack yet; the deploy creates it")
 
-        if status == "ROLLBACK_COMPLETE":
+        if status in FAILED_CREATION:
             return Check(
                 "stack.state",
                 True,
@@ -430,14 +431,14 @@ class LambdaTarget(DeployTarget):
         return rows[0].get("StackStatus") if rows else None
 
     def _clear_failed_creation(self, ctx: Context) -> None:
-        """A stack whose first creation failed sits in ROLLBACK_COMPLETE and refuses updates; it never existed, so it is deleted before the deploy creates it again."""
-        if self._status(ctx) != "ROLLBACK_COMPLETE":
+        """A stack whose first creation failed sits in ROLLBACK_COMPLETE — or ROLLBACK_FAILED when a resource could not be rolled back — and refuses updates; it never existed, so it is deleted before the deploy creates it again."""
+        status = self._status(ctx)
+
+        if status not in FAILED_CREATION:
             return
 
         stack = self._stack(ctx)
-        logger.info(
-            "stack %s is ROLLBACK_COMPLETE: deleting it before the deploy", stack
-        )
+        logger.info("stack %s is %s: deleting it before the deploy", stack, status)
         region = self._region(ctx)
         env = self.env(ctx)
         shell.aws(
