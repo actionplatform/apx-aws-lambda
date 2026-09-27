@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.2 — 2026-09-27
+
+### Bug Fixes
+- **target:** refuse an old overlay on a connected account; clear a stack whose delete failed
+
 ## v1.2.1 — 2026-09-27
 
 ### Bug Fixes
