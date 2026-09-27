@@ -15,6 +15,7 @@ action-platform diagnose
 - [What the plugin does](#what-the-plugin-does)
 - [Credentials without keys](#credentials-without-keys)
   - [A connected account (recommended)](#a-connected-account-recommended)
+  - [Updating the connect stack](#updating-the-connect-stack)
   - [A role of your own (OIDC)](#a-role-of-your-own-oidc)
   - [The AWS CLI's own credentials](#the-aws-clis-own-credentials)
 - [Where the deploy runs](#where-the-deploy-runs)
@@ -26,9 +27,9 @@ action-platform diagnose
 
 | | |
 |---|---|
-| Overlay | `template.yaml`, `samconfig.toml`, a one-line `Makefile` (`ap-build package`), `requirements/` (IAM examples), `.github/workflows/deploy.yml` (optional). One template for every language: the Lambda Web Adapter layer runs the project as an HTTP server on `$PORT` — `run.sh` from `ap-build` (Python `python3.12`, Node `nodejs22.x`, Java/Kotlin `java21`, Ruby `ruby3.3`) or the static `bootstrap` on `provided.al2023` (Go). Every `web/*` template of the official repository deploys; the health route is `/health` (API Gateway keeps `/ping` for itself on `execute-api`) |
-| Readiness | before a deploy, without building or changing anything: the tooling is there, the overlay is applied, the stack name resolves, the credentials work, the stack is not mid-operation or failed (a `ROLLBACK_COMPLETE` first creation is a warning — the deploy deletes it), the deploy role may do what the template needs (simulated with `iam:SimulatePrincipalPolicy` against the stack, the function, its log group, the execution role and every public layer the template references — the Lambda Web Adapter's, for one) and `sam validate --lint` passes. The platform runs it after every release for `dev` and `prod` and refuses a blocked deploy unless forced; `action-platform readiness` runs it on a machine |
-| Deploy | `sam build` + `sam deploy --config-env <stage>` (`dev` → `default`, `prod` → `prod`); a stack left in `ROLLBACK_COMPLETE` by a failed first creation is deleted first. Every line `sam` prints reaches the platform's run log as it appears — the deploy form, the run dialog, `action-platform logs -f` |
+| Overlay | `template.yaml`, `samconfig.toml`, a one-line `Makefile` (`ap-build package`), `requirements/` (IAM examples), `.github/workflows/deploy.yml` (optional). One template for every language: the Lambda Web Adapter layer runs the project as an HTTP server on `$PORT` — `run.sh` from `ap-build` (Python `python3.12`, Node `nodejs22.x`, Java/Kotlin `java21`, Ruby `ruby3.3`) or the static `bootstrap` on `provided.al2023` (Go). Every `web/*` template of the official repository deploys; the health route is `/health` (API Gateway keeps `/ping` for itself on `execute-api`). Template parameters the target fills: `Stage` (the scope's name), and for a connected account `PermissionsBoundaryArn` and `RolePath` |
+| Readiness | before a deploy, without building or changing anything: the tooling is there, the overlay is applied, the stack name resolves, the credentials work, the stack is not mid-operation or failed (a failed first creation — `ROLLBACK_COMPLETE` or `ROLLBACK_FAILED` — is a warning: the deploy deletes it), the overlay takes a connected account's boundary and role path, the deploy role may do what the template needs (simulated with `iam:SimulatePrincipalPolicy` against the stack, the function, its log group, the execution role and every public layer the template references — the Lambda Web Adapter's, for one) and `sam validate --lint` passes. The platform runs it after every release for each of the app's scopes and refuses a blocked deploy unless forced; `action-platform readiness` runs it on a machine |
+| Deploy | `sam build` + `sam deploy --config-env <stage>` (scope `prod` → `prod`, any other → `default`). A stack left by a failed first creation (`ROLLBACK_COMPLETE`, `ROLLBACK_FAILED`) is deleted first; when that delete fails on a resource that was never created, the stack is deleted again with it retained. On a connected account, an overlay without `PermissionsBoundaryArn` and `RolePath` stops the deploy before the build. Every line `sam` prints reaches the platform's run log as it appears — the deploy form, the run dialog, `action-platform logs -f` |
 | Rollback | CloudFormation `rollback-stack` — previous stack state |
 | Diagnose | stack status and the HTTP API url |
 | Destroy | `sam delete` of the stage's stack, the execution role SAM created with it |
@@ -52,20 +53,24 @@ The target looks for credentials in this order:
 | Under `[deploy]` | How | Who decides what the app may do |
 |---|---|---|
 | `role_arn` | `sts assume-role-with-web-identity` with a platform token | the role's trust and permission policies |
-| neither, and the organization's deploy role set on the platform (Plugins → AWS Lambda), which every deploy job carries as `AP_AWS_LAMBDA_ROLE_ARN` with `AP_APP` | `sts assume-role-with-web-identity` on the connect stack's role with the platform's token for the app | the token's session tag and the role's policy, in your account |
+| neither, and the organization's AWS account ID (or deploy role ARN) set on the platform (Plugins → AWS Lambda), which every deploy job carries as `AP_AWS_LAMBDA_ROLE_ARN` with `AP_APP` | `sts assume-role-with-web-identity` on the connect stack's role with the platform's token for the app | the token's session tag and the role's policy, in your account |
 | neither | the AWS CLI's own chain: SSO, profile, instance role | whatever that identity may do |
 
 ### A connected account (recommended)
 
 One CloudFormation stack, IAM only — no function, no table, nothing to upgrade. AWS itself trusts the platform's OIDC tokens; the token's session tag keeps each deploy inside its app.
 
-**1. Create the stack** — once per AWS account, with your own AWS credentials (not the root account). On the platform: Plugins → AWS Lambda → Configure → **Connect AWS** copies the command and opens AWS CloudShell (the AWS sign-in first); paste, press Enter, and paste the account ID it prints into the field. Or in the console: CloudFormation → Create stack → *Upload a template file* → [`apx_aws_lambda/connect/template.yaml`](apx_aws_lambda/connect/template.yaml), parameters `IssuerUrl` (the platform's public url) and `Organization` (its slug), acknowledge IAM; or from a machine:
+**1. Create the stack** — once per AWS account, with an IAM user or role that may create IAM resources (not the root account). On the platform: Plugins → AWS Lambda → Configure → **Connect AWS**. The button copies a command and opens AWS CloudShell, behind the AWS sign-in; paste the command and press Enter. It downloads this release's [`connect/template.yaml`](apx_aws_lambda/connect/template.yaml) from GitHub, deploys it as the stack `action-platform-connect` in `us-east-1` with the platform's url and the organization's slug, and prints the account ID.
+
+Without the button, the same stack from a machine logged in to the account:
 
 ```bash
 action-platform aws-lambda connect https://platform.example.com acme      # --region, --stack-name, --oidc-provider-arn
 ```
 
-**2. Tell the platform** — Plugins → AWS Lambda → Configure → **AWS account ID** = the 12-digit account ID (or the stack's `DeployRoleArn` output). Every app of the organization whose `platform.toml` says `target = "aws/lambda"` deploys from then on; nothing to register per app.
+or in the console: CloudFormation → Create stack → *Upload a template file* → [`apx_aws_lambda/connect/template.yaml`](apx_aws_lambda/connect/template.yaml), parameters `IssuerUrl` (the platform's public url) and `Organization` (its slug), acknowledge IAM.
+
+**2. Tell the platform** — Plugins → AWS Lambda → Configure → **AWS account ID** = the 12 digits the command printed (the stack's `DeployRoleArn` output works too). Every app of the organization whose `platform.toml` says `target = "aws/lambda"` deploys from then on; nothing to register per app.
 
 What the stack creates:
 
@@ -73,11 +78,15 @@ What the stack creates:
 |---|---|
 | IAM OIDC provider | trusts `IssuerUrl` for audience `sts.amazonaws.com`; pass `OidcProviderArn` when the account already has one for the platform |
 | `ActionPlatformAppBoundary` (`/action-platform/`) | the cap on every execution role an app's stack creates — logs `/aws/lambda/<prefix>*`; S3 buckets, DynamoDB tables, SQS queues, SNS topics, Lambda functions `<prefix>-*`; Secrets Manager secrets and SSM parameters `<prefix>/*`; X-Ray — `<prefix>` being the role's `action-platform:prefix` tag. An app's own `template.yaml` still declares what its function needs; the boundary caps it |
-| `ActionPlatformDeploy` role (`/action-platform/`) | trust: `AssumeRoleWithWebIdentity` for `sub` `org:<org>:*`, and `TagSession` only for the one tag `action-platform:prefix` with a value `ap-<org>-*`. Policy: every resource under `${aws:PrincipalTag/action-platform:prefix}` — CloudFormation stacks, Lambda, logs; API Gateway; the public Lambda Web Adapter layers; SAM's bucket; `iam:CreateRole` on `<prefix>-*` only with the boundary attached and the app's own prefix tag, `iam:PassRole` of those roles to Lambda only; `iam:SimulatePrincipalPolicy` on itself |
+| `ActionPlatformDeploy` role (`/action-platform/`) | trust: `AssumeRoleWithWebIdentity` for `sub` `org:<org>:*`, and `TagSession` only for the one tag `action-platform:prefix` with a value `ap-<org>-*`. Policy: every resource under `${aws:PrincipalTag/action-platform:prefix}` — CloudFormation stacks, Lambda, logs; API Gateway; the public Lambda Web Adapter layers; SAM's bucket; IAM on roles under the path `/action-platform/<prefix>/` only — `iam:CreateRole` with the boundary attached and the app's own prefix tag, `iam:PassRole` to Lambda only; `iam:SimulatePrincipalPolicy` on itself |
 
-How a deploy runs: the platform signs a token for the app with the claim `https://aws.amazon.com/tags` → `principal_tags.action-platform:prefix = ap-<org>-<project>-<app>`; the target assumes the deploy role with it, names the stack `ap-<org>-<project>-<app>-<scope>`, passes `PermissionsBoundaryArn` to the overlay's template and tags the stack with the prefix, so the execution role SAM creates carries both the boundary and the tag. `sam delete` removes that role with the stack. Who may deploy which app is the platform's decision — it only signs a token for an app the job or the caller is for.
+How a deploy runs: the platform signs a token for the app with the claim `https://aws.amazon.com/tags` → `principal_tags.action-platform:prefix = ap-<org>-<project>-<app>`; the target assumes the deploy role with it, names the stack `ap-<org>-<project>-<app>-<scope>`, passes `PermissionsBoundaryArn` and `RolePath=/action-platform/<prefix>/` to the overlay's template and tags the stack with the prefix, so the execution role SAM creates carries the boundary and the tag and lives under the app's path. The path, not the name, tells an app's roles apart: CloudFormation cuts a generated role name to 64 characters, which can drop the prefix from it. `sam delete` removes that role with the stack. Who may deploy which app is the platform's decision — it only signs a token for an app the job or the caller is for.
 
-Readiness simulates the deploy role with the session tag and the boundary as context entries, and flags an overlay without the `PermissionsBoundaryArn` parameter (apply the overlay again). The stack's policy is the one place to widen or narrow what deploys may do: edit and update the stack.
+Readiness simulates the deploy role with the session tag, the boundary and `iam:PassedToService` as context entries, and flags an overlay without the `PermissionsBoundaryArn` or `RolePath` parameter. An app whose overlay predates them applies it again: Configuration → **Deploy target**, or `action-platform cloud set aws/lambda`. The stack's policy is the one place to widen or narrow what deploys may do.
+
+### Updating the connect stack
+
+The command pins the template to the plugin's release. After the platform moves to a plugin whose connect template changed, run **Connect AWS** again (or `action-platform aws-lambda connect …`): CloudFormation updates `action-platform-connect` in place, and the account ID stays the same.
 
 ### A role of your own (OIDC)
 
@@ -139,7 +148,8 @@ Independent of how credentials are obtained:
 - `aws` and `sam` — on PATH when present; otherwise the `awscli` and `aws-sam-cli` packages the plugin depends on run as `python -m`, which is how the hosted platform deploys without the CLIs in its image.
 - `AWS_REGION` or `region` under `[deploy]`.
 - Network: `*.amazonaws.com`.
-- Connecting the account: credentials for it, once — the console, or `aws` for `action-platform aws-lambda connect`.
+- Connecting the account: credentials for it that may create IAM resources, once — AWS CloudShell through the Connect AWS button, the console, or `aws` for `action-platform aws-lambda connect`.
+- `action-platform` 0.32.0 or newer: the Connect AWS button is an option action of the core.
 
 ## Development
 
