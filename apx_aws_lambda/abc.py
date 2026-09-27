@@ -45,6 +45,10 @@ class Stack(ABC):
     @abstractmethod
     def rollback(self) -> None: ...
 
+    @abstractmethod
+    def failure(self) -> str | None:
+        """Why the latest operation failed: each FAILED resource and its reason."""
+
 
 class Sam(ABC):
     """The SAM CLI on the repository."""
