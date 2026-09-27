@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from action_platform.abc import DeployTarget
 from action_platform.core.context import Check, Context, DeployResult, Diagnosis
 from action_platform.core.exception import DeployError
+from action_platform.logging import emit
 
 from apx_aws_lambda import shell
 from apx_aws_lambda.abc import Access, Credentials, Sam, Stack
@@ -159,7 +160,21 @@ class LambdaTarget(DeployTarget):
 
         parts.sam.build()
         parts.stack.clear_failed_creation()
-        parts.sam.deploy()
+
+        try:
+            parts.sam.deploy()
+        except DeployError as e:
+            reason = parts.stack.failure()
+
+            if reason:
+                emit(f"aws/lambda: {spec.stack} failed:\n{reason}")
+
+            return DeployResult(
+                ok=False,
+                target=self.name,
+                version=spec.version,
+                error=reason.splitlines()[0] if reason else str(e)[-500:],
+            )
 
         return DeployResult(
             ok=True,

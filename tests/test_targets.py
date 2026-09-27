@@ -161,6 +161,59 @@ class LambdaTargetTest(unittest.TestCase):
             ["aws", "cloudformation", "delete-stack"], [c[:3] for c in self.calls]
         )
 
+    def test_a_failed_deploy_names_the_resource_and_its_reason(self):
+        events = {
+            "StackEvents": [
+                {
+                    "LogicalResourceId": "shop-dev",
+                    "ResourceType": "AWS::CloudFormation::Stack",
+                    "ResourceStatus": "ROLLBACK_FAILED",
+                    "ResourceStatusReason": "The following resource(s) failed to delete: [ApiFunctionRole].",
+                },
+                {
+                    "LogicalResourceId": "ApiFunctionRole",
+                    "ResourceType": "AWS::IAM::Role",
+                    "ResourceStatus": "CREATE_FAILED",
+                    "ResourceStatusReason": "not authorized to perform: iam:CreateRole",
+                },
+                {
+                    "LogicalResourceId": "shop-dev",
+                    "ResourceType": "AWS::CloudFormation::Stack",
+                    "ResourceStatus": "CREATE_IN_PROGRESS",
+                },
+                {
+                    "LogicalResourceId": "Old",
+                    "ResourceType": "AWS::IAM::Role",
+                    "ResourceStatus": "CREATE_FAILED",
+                    "ResourceStatusReason": "an earlier operation",
+                },
+            ]
+        }
+
+        def run(args, cwd=None, env=None):
+            self.calls.append([Path(args[0]).name, *args[1:]])
+
+            if args[1:3] == ["deploy", "--no-confirm-changeset"]:
+                raise DeployError(
+                    "sam deploy failed: Waiter StackCreateComplete failed"
+                )
+
+            if " ".join(args[1:3]) == "cloudformation describe-stack-events":
+                return json.dumps(events)
+
+            return "{}"
+
+        with mock.patch.multiple(
+            shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
+        ):
+            result = LambdaTarget().deploy(self.ctx("dev"))
+
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            result.error,
+            "ApiFunctionRole CREATE_FAILED: not authorized to perform: iam:CreateRole",
+        )
+
     def test_a_healthy_stack_is_left_alone(self):
         target = LambdaTarget()
 

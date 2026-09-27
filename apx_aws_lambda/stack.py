@@ -10,6 +10,7 @@ from apx_aws_lambda.abc import Access, Stack
 from apx_aws_lambda.spec import Spec
 
 FAILED_CREATION = ("ROLLBACK_COMPLETE", "ROLLBACK_FAILED")
+MAX_EVENTS = 5
 
 
 class CloudFormationStack(Stack):
@@ -60,6 +61,38 @@ class CloudFormationStack(Stack):
         ]
         logger.info("stack %s kept %s: deleting it without them", stack, stuck)
         self._delete(retain=stuck)
+
+    def failure(self) -> str | None:
+        """The FAILED events of the latest operation, oldest first — the first one is usually the cause, the rest its rollback."""
+        try:
+            events = self._aws(
+                "cloudformation",
+                "describe-stack-events",
+                "--stack-name",
+                self.spec.stack,
+            ).get("StackEvents", [])
+        except DeployError:
+            return None
+
+        failed = []
+
+        for event in events:
+            if (
+                event.get("ResourceType") == "AWS::CloudFormation::Stack"
+                and event.get("ResourceStatus", "").endswith("_IN_PROGRESS")
+                and event.get("LogicalResourceId") == self.spec.stack
+                and failed
+            ):
+                break
+
+            if event.get("ResourceStatus", "").endswith("FAILED") and event.get(
+                "ResourceStatusReason"
+            ):
+                failed.append(
+                    f"{event.get('LogicalResourceId')} {event['ResourceStatus']}: {event['ResourceStatusReason']}"
+                )
+
+        return "\n".join(reversed(failed[:MAX_EVENTS])) or None
 
     def rollback(self) -> None:
         self._aws("cloudformation", "rollback-stack", "--stack-name", self.spec.stack)
