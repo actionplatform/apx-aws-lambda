@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.1 — 2026-09-27
+
+### Bug Fixes
+- **target:** name the stack after the scope; clear a ROLLBACK_FAILED first creation
+
 ## v1.2.0 — 2026-09-27
 
 ### Bug Fixes
