@@ -257,10 +257,13 @@ class LambdaTarget(DeployTarget):
 
         return checks
 
-    def _boundary_parameter(self, ctx: Context) -> Check:
+    def _takes_boundary(self, ctx: Context) -> bool:
         text = (ctx.repo_root / "template.yaml").read_text(errors="replace")
 
-        if "PermissionsBoundaryArn" in text and "RolePath" in text:
+        return "PermissionsBoundaryArn" in text and "RolePath" in text
+
+    def _boundary_parameter(self, ctx: Context) -> Check:
+        if self._takes_boundary(ctx):
             return Check(
                 "template.boundary", True, "the execution role takes the boundary"
             )
@@ -441,28 +444,67 @@ class LambdaTarget(DeployTarget):
         logger.info("stack %s is %s: deleting it before the deploy", stack, status)
         region = self._region(ctx)
         env = self.env(ctx)
-        shell.aws(
-            "cloudformation",
-            "delete-stack",
-            "--stack-name",
-            stack,
-            region=region,
-            env=env,
-        )
-        shell.aws(
-            "cloudformation",
-            "wait",
-            "stack-delete-complete",
-            "--stack-name",
-            stack,
-            region=region,
-            env=env,
-        )
+        self._delete_stack(stack, region, env)
+
+        if self._status(ctx) != "DELETE_FAILED":
+            return
+
+        stuck = [
+            row["LogicalResourceId"]
+            for row in shell.aws(
+                "cloudformation",
+                "describe-stack-resources",
+                "--stack-name",
+                stack,
+                region=region,
+                env=env,
+            ).get("StackResources", [])
+            if row.get("ResourceStatus") == "DELETE_FAILED"
+        ]
+        logger.info("stack %s kept %s: deleting it without them", stack, stuck)
+        self._delete_stack(stack, region, env, retain=stuck)
+
+    def _delete_stack(
+        self,
+        stack: str,
+        region: str | None,
+        env: dict[str, str] | None,
+        retain: list[str] | None = None,
+    ) -> None:
+        """Delete and wait; a delete that fails leaves the stack in DELETE_FAILED for the caller to look at."""
+        args = ["cloudformation", "delete-stack", "--stack-name", stack]
+
+        if retain:
+            args += ["--retain-resources", *retain]
+
+        shell.aws(*args, region=region, env=env)
+
+        try:
+            shell.aws(
+                "cloudformation",
+                "wait",
+                "stack-delete-complete",
+                "--stack-name",
+                stack,
+                region=region,
+                env=env,
+            )
+        except DeployError:
+            if retain:
+                raise
 
     def deploy(self, ctx: Context) -> DeployResult:
         sam = shell.require("sam", "pip install aws-sam-cli")
         stage = self._stage(ctx)
         env = self.env(ctx)
+
+        if (env or {}).get("AP_BOUNDARY") and not self._takes_boundary(ctx):
+            raise DeployError(
+                "template.yaml lacks the PermissionsBoundaryArn or RolePath parameter, so the execution role "
+                "would land outside what a connected account may create: apply the aws/lambda overlay again "
+                "(Configuration → Deploy target, or action-platform cloud set aws/lambda)"
+            )
+
         shell.run([*sam, "build"], cwd=ctx.repo_root, env=env)
         self._clear_failed_creation(ctx)
         args = [
