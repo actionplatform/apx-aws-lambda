@@ -16,3 +16,21 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check . && ruff format --check .
       - run: pytest -q
+
+  templates:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, node, go, java, kotlin, ruby]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install cookiecutter cfn-lint
+      - run: cookiecutter --no-input -o out apx_aws_lambda/overlays/cloud/aws/lambda project_name=demo language=${{ matrix.language }} type=web ci=github
+      - run: cfn-lint out/demo/template.yaml
+      - if: matrix.language == 'python'
+        run: cfn-lint apx_aws_lambda/connect/template.yaml
+
