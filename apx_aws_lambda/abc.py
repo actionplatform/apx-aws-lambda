@@ -66,6 +66,14 @@ class Sam(ABC):
     def validate(self) -> None: ...
 
 
+class Health(ABC):
+    """Whether the deployed application answers."""
+
+    @abstractmethod
+    def answers(self, url: str) -> str | None:
+        """None when `url` answers 2xx in time; otherwise what it did instead."""
+
+
 class Readiness(ABC):
     """One check a deploy needs to pass, run without building or changing anything."""
 

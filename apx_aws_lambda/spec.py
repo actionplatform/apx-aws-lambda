@@ -25,6 +25,7 @@ class Options:
     role_arn: str | None = None
     session_name: str = "action-platform"
     app: str | None = None
+    health: str = "/health"
 
 
 @dataclass(frozen=True)

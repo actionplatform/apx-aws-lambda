@@ -13,7 +13,7 @@ from action_platform.core.exception import DeployError
 from action_platform.logging import emit
 
 from apx_aws_lambda import shell
-from apx_aws_lambda.abc import Access, Credentials, Sam, Stack
+from apx_aws_lambda.abc import Access, Credentials, Health, Sam, Stack
 from apx_aws_lambda.checks import (
     BoundaryCheck,
     CredentialsCheck,
@@ -25,6 +25,7 @@ from apx_aws_lambda.checks import (
     ToolCheck,
 )
 from apx_aws_lambda.credentials import credentials_for
+from apx_aws_lambda.health import HttpHealth
 from apx_aws_lambda.sam import HINT, SamCli
 from apx_aws_lambda.spec import Options, Spec
 from apx_aws_lambda.stack import CloudFormationStack, outputs_of, url_of
@@ -41,6 +42,7 @@ class Parts:
 
 class LambdaTarget(DeployTarget):
     name = "aws/lambda"
+    health: Health = HttpHealth()
 
     def __init__(
         self,
@@ -49,6 +51,7 @@ class LambdaTarget(DeployTarget):
         role_arn: str | None = None,
         session_name: str = "action-platform",
         app: str | None = None,
+        health: str = "/health",
         **_: object,
     ) -> None:
         self.options = Options(
@@ -59,6 +62,7 @@ class LambdaTarget(DeployTarget):
             role_arn=role_arn or os.environ.get("AWS_ROLE_ARN"),
             session_name=session_name,
             app=app,
+            health=health,
         )
 
     def spec(self, ctx: Context) -> Spec:
@@ -176,12 +180,23 @@ class LambdaTarget(DeployTarget):
                 error=reason.splitlines()[0] if reason else str(e)[-500:],
             )
 
-        return DeployResult(
-            ok=True,
-            target=self.name,
-            version=spec.version,
-            url=url_of(outputs_of(parts.stack.describe())),
-        )
+        url = url_of(outputs_of(parts.stack.describe()))
+
+        if url and spec.options.health:
+            unhealthy = self.health.answers(url.rstrip("/") + spec.options.health)
+
+            if unhealthy:
+                emit(f"aws/lambda: {unhealthy}")
+
+                return DeployResult(
+                    ok=False,
+                    target=self.name,
+                    version=spec.version,
+                    url=url,
+                    error=unhealthy,
+                )
+
+        return DeployResult(ok=True, target=self.name, version=spec.version, url=url)
 
     def rollback(self, ctx: Context, to_version: str | None = None) -> None:
         if to_version:
