@@ -59,13 +59,13 @@ The target looks for credentials in this order:
 
 One CloudFormation stack, IAM only — no function, no table, nothing to upgrade. AWS itself trusts the platform's OIDC tokens; the token's session tag keeps each deploy inside its app.
 
-**1. Create the stack** — once per AWS account, with your own AWS credentials (not the root account). Either in the console: CloudFormation → Create stack → *Upload a template file* → [`apx_aws_lambda/connect/template.yaml`](apx_aws_lambda/connect/template.yaml), parameters `IssuerUrl` (the platform's public url) and `Organization` (its slug), acknowledge IAM; or from a machine:
+**1. Create the stack** — once per AWS account, with your own AWS credentials (not the root account). On the platform: Plugins → AWS Lambda → Configure → **Connect AWS** copies the command and opens AWS CloudShell (the AWS sign-in first); paste, press Enter, and paste the account ID it prints into the field. Or in the console: CloudFormation → Create stack → *Upload a template file* → [`apx_aws_lambda/connect/template.yaml`](apx_aws_lambda/connect/template.yaml), parameters `IssuerUrl` (the platform's public url) and `Organization` (its slug), acknowledge IAM; or from a machine:
 
 ```bash
 action-platform aws-lambda connect https://platform.example.com acme      # --region, --stack-name, --oidc-provider-arn
 ```
 
-**2. Tell the platform** — Plugins → AWS Lambda → Configure → **Deploy role ARN** = the stack's `DeployRoleArn` output. Every app of the organization whose `platform.toml` says `target = "aws/lambda"` deploys from then on; nothing to register per app.
+**2. Tell the platform** — Plugins → AWS Lambda → Configure → **AWS account ID** = the 12-digit account ID (or the stack's `DeployRoleArn` output). Every app of the organization whose `platform.toml` says `target = "aws/lambda"` deploys from then on; nothing to register per app.
 
 What the stack creates:
 
