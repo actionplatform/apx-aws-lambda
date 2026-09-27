@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.0 — 2026-09-27
+
+### Features
+- **plugin:** Connect AWS opens CloudShell with the connect command copied
+
 ## v1.0.0 — 2026-09-25
 
 ### Breaking Changes
