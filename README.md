@@ -159,3 +159,14 @@ pytest
 ```
 
 The tests fake `aws` and `sam`; nothing reaches AWS.
+
+| Module | Responsibility (ABC in `abc.py`) |
+|---|---|
+| `lambda_.py` | `LambdaTarget`: the core's `DeployTarget` contract, composing the parts below through `parts(spec, access)` |
+| `spec.py` | `Spec`: samconfig, stack, region and — for a connected account — prefix, deploy role, boundary, resolved once per call without calling AWS |
+| `credentials.py` | `Credentials`: `OwnRole` (`[deploy] role_arn`), `ConnectedAccount`, `CliChain` — which identity `aws` and `sam` act as |
+| `stack.py` | `Stack`: the CloudFormation stack — status, outputs, clearing a failed first creation, rollback |
+| `sam.py` | `Sam`: build, deploy, delete, validate |
+| `checks.py` | `Readiness`: one class per check |
+| `shell.py` | running `aws` and `sam`, streaming `sam`'s output to the job log |
+| `tools.py`, `cli.py` | read-only views for MCP and the terminal; `connect` |

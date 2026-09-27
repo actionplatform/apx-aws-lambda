@@ -5,20 +5,37 @@ Credentials, in order: `role_arn` under `[deploy]` — the target assumes that r
 from __future__ import annotations
 
 import os
-import re
-import tomllib
+from dataclasses import dataclass
 
 from action_platform.abc import DeployTarget
 from action_platform.core.context import Check, Context, DeployResult, Diagnosis
-from action_platform.core.exception import ActionPlatformError, DeployError
-from action_platform.logging import logger
-from action_platform.remote.client import Remote
+from action_platform.core.exception import DeployError
 
 from apx_aws_lambda import shell
+from apx_aws_lambda.abc import Access, Credentials, Sam, Stack
+from apx_aws_lambda.checks import (
+    BoundaryCheck,
+    CredentialsCheck,
+    PermissionsCheck,
+    StackNameCheck,
+    StackStateCheck,
+    TemplateCheck,
+    TemplateValidCheck,
+    ToolCheck,
+)
+from apx_aws_lambda.credentials import credentials_for
+from apx_aws_lambda.sam import HINT, SamCli
+from apx_aws_lambda.spec import Options, Spec
+from apx_aws_lambda.stack import CloudFormationStack, outputs_of, url_of
 
-BOUNDARY = "policy/action-platform/ActionPlatformAppBoundary"
-FAILED_CREATION = ("ROLLBACK_COMPLETE", "ROLLBACK_FAILED")
-PREFIX_TAG = "action-platform:prefix"
+
+@dataclass(frozen=True)
+class Parts:
+    """Every responsibility wired to one identity."""
+
+    access: Access
+    stack: Stack
+    sam: Sam
 
 
 class LambdaTarget(DeployTarget):
@@ -33,213 +50,72 @@ class LambdaTarget(DeployTarget):
         app: str | None = None,
         **_: object,
     ) -> None:
-        self.region = (
-            region
+        self.options = Options(
+            region=region
             or os.environ.get("AWS_REGION")
-            or os.environ.get("AWS_DEFAULT_REGION")
-        )
-        self.config = config
-        self.role_arn = role_arn or os.environ.get("AWS_ROLE_ARN")
-        self.session_name = session_name
-        self.app = app
-        self._env: dict[str, str] | None = None
-
-    def connected(self, ctx: Context) -> tuple[str, str] | None:
-        """The organization's connected account — the deploy role its connect stack made (`AP_AWS_LAMBDA_ROLE_ARN`) and the app's prefix from `AP_APP` — unless `[deploy]` names a role of its own."""
-        if self.role_arn:
-            return None
-
-        role = ctx.env.get("AP_AWS_LAMBDA_ROLE_ARN") or os.environ.get(
-            "AP_AWS_LAMBDA_ROLE_ARN"
+            or os.environ.get("AWS_DEFAULT_REGION"),
+            config=config,
+            role_arn=role_arn or os.environ.get("AWS_ROLE_ARN"),
+            session_name=session_name,
+            app=app,
         )
 
-        if not role:
-            return None
+    def spec(self, ctx: Context) -> Spec:
+        return Spec.of(ctx, self.options)
 
-        if re.fullmatch(r"\d{12}", role.strip()):
-            role = (
-                f"arn:aws:iam::{role.strip()}:role/action-platform/ActionPlatformDeploy"
-            )
+    def credentials(self, ctx: Context, spec: Spec) -> Credentials:
+        return credentials_for(ctx, spec)
 
-        app = self.app or ctx.env.get("AP_APP") or os.environ.get("AP_APP", "")
-        parts = app.strip("/").split("/")
-
-        if len(parts) != 3 or not all(parts):
-            raise DeployError(
-                f"the organization's AWS account is connected, but the app is not known as <org>/<project>/<app> (got {app!r}): deploy from the platform"
-            )
-
-        return role, "ap-" + "-".join(parts)
+    def parts(self, spec: Spec, access: Access) -> Parts:
+        """The implementation of every responsibility for one identity; override to swap one."""
+        return Parts(
+            access=access,
+            stack=CloudFormationStack(spec, access),
+            sam=SamCli(spec, access),
+        )
 
     def env(self, ctx: Context) -> dict[str, str] | None:
         """The environment `aws` and `sam` run with: temporary credentials from `role_arn` or the connected account's deploy role, else the caller's own."""
-        if self._env is not None:
-            return self._env
+        spec = self.spec(ctx)
 
-        connected = self.connected(ctx)
-
-        if connected is None and not self.role_arn:
-            return None
-
-        if connected is not None:
-            granted = connected_env(ctx, *connected, self.session_name, self.region)
-        else:
-            granted = assume_role(
-                ctx, self.role_arn or "", self.session_name, self.region
-            )
-
-        self._env = {**os.environ, **granted}
-
-        return self._env
-
-    def _stage(self, ctx: Context) -> str:
-        return "prod" if ctx.stage == "prod" else "default"
-
-    def _samconfig(self, ctx: Context) -> dict:
-        path = ctx.repo_root / self.config
-
-        if not path.exists():
-            raise DeployError(
-                f"{self.config} not found: apply the aws/lambda overlay first"
-            )
-
-        return tomllib.loads(path.read_text())
-
-    def _stack(self, ctx: Context) -> str:
-        """The stack: `<prefix>-<stage>` for a connected account — the repository's samconfig.toml never has to know the organization — else samconfig.toml's `stack_name`."""
-        prefix = (self.env(ctx) or {}).get("AP_STACK_PREFIX")
-
-        if prefix:
-            return f"{prefix}-{ctx.stage or 'dev'}"
-
-        params = (
-            self._samconfig(ctx)
-            .get(self._stage(ctx), {})
-            .get("deploy", {})
-            .get("parameters", {})
-        )
-        stack = params.get("stack_name")
-
-        if not stack:
-            raise DeployError(f"{self.config} has no stack_name for {self._stage(ctx)}")
-
-        return stack
-
-    def _overrides(self, ctx: Context, env: dict[str, str] | None) -> list[str]:
-        """`--parameter-overrides`: the stage's own from samconfig.toml, then Stage set to the scope's name and the boundary of a connected account — the CLI flag replaces the file's, so they all go together."""
-        params = (
-            self._samconfig(ctx)
-            .get(self._stage(ctx), {})
-            .get("deploy", {})
-            .get("parameters", {})
-        )
-        own = [
-            item
-            for item in str(params.get("parameter_overrides") or "").split()
-            if not item.startswith(("Stage=", "PermissionsBoundaryArn=", "RolePath="))
-        ]
-        own.append(f"Stage={ctx.stage}")
-        boundary = (env or {}).get("AP_BOUNDARY")
-
-        if boundary:
-            own.append(f"PermissionsBoundaryArn={boundary}")
-            own.append(f"RolePath={role_path((env or {})['AP_STACK_PREFIX'])}")
-
-        return ["--parameter-overrides", " ".join(own)]
-
-    def _tags(self, ctx: Context, env: dict[str, str] | None) -> list[str]:
-        """`--tags` for a connected account: the stage's own from samconfig.toml plus the app's prefix, which the stack hands to the execution role it creates — the tag the boundary scopes that role by."""
-        if not (env or {}).get("AP_BOUNDARY"):
-            return []
-
-        params = (
-            self._samconfig(ctx)
-            .get(self._stage(ctx), {})
-            .get("deploy", {})
-            .get("parameters", {})
-        )
-        own = [
-            item
-            for item in str(params.get("tags") or "").split()
-            if not item.startswith(f"{PREFIX_TAG}=")
-        ]
-        own.append(f"{PREFIX_TAG}={env['AP_STACK_PREFIX']}")
-
-        return ["--tags", " ".join(own)]
-
-    def _region(self, ctx: Context) -> str | None:
-        params = (
-            self._samconfig(ctx)
-            .get(self._stage(ctx), {})
-            .get("deploy", {})
-            .get("parameters", {})
-        )
-
-        return self.region or params.get("region")
+        return self.credentials(ctx, spec).access(spec).env
 
     def preflight(self, ctx: Context) -> None:
-        shell.require("sam", "pip install aws-sam-cli")
+        shell.require("sam", HINT)
         shell.require("aws", "https://aws.amazon.com/cli/")
+        spec = self.spec(ctx)
 
-        if not (ctx.repo_root / "template.yaml").exists():
+        if not spec.template.exists():
             raise DeployError(
                 "template.yaml not found: apply the aws/lambda overlay first"
             )
 
-        self._stack(ctx)
-        env = self.env(ctx)
-        shell.aws("sts", "get-caller-identity", region=self._region(ctx), env=env)
-        shell.run(
-            [*shell.require("sam", ""), "validate", "--lint"],
-            cwd=ctx.repo_root,
-            env=self.env(ctx),
+        spec.stack
+        parts = self.parts(spec, self.credentials(ctx, spec).access(spec))
+        shell.aws(
+            "sts", "get-caller-identity", region=spec.region, env=parts.access.env
         )
+        parts.sam.validate()
 
     def readiness(self, ctx: Context) -> list[Check]:
-        checks: list[Check] = []
+        spec = self.spec(ctx)
+        checks = [
+            ToolCheck("sam", HINT).run(spec),
+            ToolCheck("aws", "https://aws.amazon.com/cli/").run(spec),
+        ]
 
-        for tool, hint in (
-            ("sam", "pip install aws-sam-cli"),
-            ("aws", "https://aws.amazon.com/cli/"),
-        ):
-            try:
-                shell.require(tool, hint)
-                checks.append(Check(f"tool.{tool}", True, "installed"))
-            except DeployError as e:
-                checks.append(Check(f"tool.{tool}", False, str(e), fix=hint))
+        for gate in (TemplateCheck(), StackNameCheck()):
+            checks.append(gate.run(spec))
 
-        if not (ctx.repo_root / "template.yaml").exists():
-            checks.append(
-                Check(
-                    "template.present",
-                    False,
-                    "template.yaml not found",
-                    fix="apply the aws/lambda overlay: action-platform cloud set aws/lambda",
-                )
-            )
-
-            return checks
+            if not checks[-1].ok:
+                return checks
 
         try:
-            stack = self._stack(ctx)
-            checks.append(Check("stack.name", True, stack))
-        except DeployError as e:
-            checks.append(Check("stack.name", False, str(e), fix="fill samconfig.toml"))
-
-            return checks
-
-        try:
-            env = self.env(ctx)
-            identity = shell.aws(
-                "sts", "get-caller-identity", region=self._region(ctx), env=env
-            )
-            checks.append(
-                Check("aws.credentials", True, identity.get("Arn", "credentials work"))
-            )
+            access = self.credentials(ctx, spec).access(spec)
         except DeployError as e:
             checks.append(
                 Check(
-                    "aws.credentials",
+                    CredentialsCheck.id,
                     False,
                     str(e),
                     fix="connect the AWS account in the AWS Lambda plugin",
@@ -248,284 +124,48 @@ class LambdaTarget(DeployTarget):
 
             return checks
 
-        if (env or {}).get("AP_BOUNDARY"):
-            checks.append(self._boundary_parameter(ctx))
+        credentials = CredentialsCheck(access)
+        checks.append(credentials.run(spec))
 
-        checks.append(self._stack_state(ctx))
-        checks.extend(self._permissions(ctx, env, identity, stack))
-        checks.append(self._template_valid(ctx, env))
+        if not checks[-1].ok:
+            return checks
+
+        parts = self.parts(spec, access)
+
+        if spec.connected:
+            checks.append(BoundaryCheck().run(spec))
+
+        checks.append(StackStateCheck(parts.stack).run(spec))
+        permissions = PermissionsCheck(access, credentials).run(spec)
+
+        if permissions is not None:
+            checks.append(permissions)
+
+        checks.append(TemplateValidCheck(parts.sam).run(spec))
 
         return checks
 
-    def _takes_boundary(self, ctx: Context) -> bool:
-        text = (ctx.repo_root / "template.yaml").read_text(errors="replace")
-
-        return "PermissionsBoundaryArn" in text and "RolePath" in text
-
-    def _boundary_parameter(self, ctx: Context) -> Check:
-        if self._takes_boundary(ctx):
-            return Check(
-                "template.boundary", True, "the execution role takes the boundary"
-            )
-
-        return Check(
-            "template.boundary",
-            False,
-            "template.yaml lacks the PermissionsBoundaryArn or RolePath parameter: a connected account creates the execution role only within its boundary, under the app's path",
-            fix="apply the aws/lambda overlay again: action-platform cloud set aws/lambda",
-        )
-
-    def _stack_state(self, ctx: Context) -> Check:
-        status = self._status(ctx)
-
-        if status is None:
-            return Check("stack.state", True, "no stack yet; the deploy creates it")
-
-        if status in FAILED_CREATION:
-            return Check(
-                "stack.state",
-                True,
-                f"{status}: the failed first creation is deleted before the deploy",
-                severity="warning",
-            )
-
-        if status.endswith("_IN_PROGRESS"):
-            return Check(
-                "stack.state",
-                False,
-                f"{status}: another operation is running on the stack",
-                fix="wait for it to finish, or cancel it in CloudFormation",
-            )
-
-        if status.endswith("_FAILED"):
-            return Check(
-                "stack.state",
-                False,
-                status,
-                fix="the stack needs attention in CloudFormation before a deploy can update it",
-            )
-
-        return Check("stack.state", True, status)
-
-    def _permissions(
-        self, ctx: Context, env: dict[str, str] | None, identity: dict, stack: str
-    ) -> list[Check]:
-        role = (env or {}).get("AP_DEPLOY_ROLE") or _role_of(identity.get("Arn", ""))
-
-        if not role:
-            return []
-
-        account = identity.get("Account", "")
-        region = self._region(ctx) or "us-east-1"
-        wanted: list[tuple[list[str], list[str]]] = [
-            (
-                ["cloudformation:CreateChangeSet", "cloudformation:DescribeStacks"],
-                [f"arn:aws:cloudformation:{region}:{account}:stack/{stack}/*"],
-            ),
-            (
-                ["lambda:CreateFunction", "lambda:UpdateFunctionCode"],
-                [f"arn:aws:lambda:{region}:{account}:function:{stack}-ApiFunction"],
-            ),
-            (
-                ["logs:CreateLogGroup"],
-                [
-                    f"arn:aws:logs:{region}:{account}:log-group:/aws/lambda/{stack}-ApiFunction"
-                ],
-            ),
-        ]
-        layers = self._layers(ctx, region)
-
-        if layers:
-            wanted.append((["lambda:GetLayerVersion"], layers))
-
-        boundary = (env or {}).get("AP_BOUNDARY")
-        context: list[str] = []
-
-        if boundary:
-            execution = f"arn:aws:iam::{account}:role{role_path(env['AP_STACK_PREFIX'])}{stack}-ApiFunctionRole"
-            wanted.append((["iam:CreateRole", "iam:PassRole"], [execution]))
-            context = [
-                "--context-entries",
-                f"ContextKeyName=aws:PrincipalTag/{PREFIX_TAG},ContextKeyValues={env['AP_STACK_PREFIX']},ContextKeyType=string",
-                f"ContextKeyName=iam:PermissionsBoundary,ContextKeyValues={boundary},ContextKeyType=string",
-                "ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string",
-            ]
-
-        denied: list[str] = []
-
-        for actions, resources in wanted:
-            try:
-                data = shell.aws(
-                    "iam",
-                    "simulate-principal-policy",
-                    "--policy-source-arn",
-                    role,
-                    "--action-names",
-                    *actions,
-                    "--resource-arns",
-                    *resources,
-                    *context,
-                    env=env,
-                )
-            except DeployError as e:
-                return [
-                    Check(
-                        "aws.permissions",
-                        True,
-                        f"not simulated: {str(e)[:200]}",
-                        severity="warning",
-                    )
-                ]
-
-            for row in data.get("EvaluationResults") or []:
-                if row.get("EvalDecision") != "allowed":
-                    denied.append(
-                        f"{row.get('EvalActionName')} on {row.get('EvalResourceName')}"
-                    )
-
-        if denied:
-            return [
-                Check(
-                    "aws.permissions",
-                    False,
-                    f"{role} may not: " + "; ".join(denied),
-                    fix="widen the deploy role's policy (update the connect stack when it created the role)",
-                )
-            ]
-
-        return [Check("aws.permissions", True, f"{role} may deploy {stack}")]
-
-    def _layers(self, ctx: Context, region: str) -> list[str]:
-        text = (ctx.repo_root / "template.yaml").read_text(errors="replace")
-        text = text.replace("${AWS::Region}", region)
-
-        return sorted(
-            set(re.findall(r"arn:aws:lambda:[\w-]+:\d{12}:layer:[\w-]+:\d+", text))
-        )
-
-    def _template_valid(self, ctx: Context, env: dict[str, str] | None) -> Check:
-        try:
-            shell.run(
-                [*shell.require("sam", ""), "validate", "--lint"],
-                cwd=ctx.repo_root,
-                env=env,
-            )
-        except DeployError as e:
-            return Check("template.valid", False, str(e), fix="fix template.yaml")
-
-        return Check("template.valid", True, "sam validate --lint passes")
-
-    def _status(self, ctx: Context) -> str | None:
-        """The stack's CloudFormation status, or None when there is no stack."""
-        try:
-            data = shell.aws(
-                "cloudformation",
-                "describe-stacks",
-                "--stack-name",
-                self._stack(ctx),
-                region=self._region(ctx),
-                env=self.env(ctx),
-            )
-        except DeployError:
-            return None
-
-        rows = data.get("Stacks") or []
-
-        return rows[0].get("StackStatus") if rows else None
-
-    def _clear_failed_creation(self, ctx: Context) -> None:
-        """A stack whose first creation failed sits in ROLLBACK_COMPLETE — or ROLLBACK_FAILED when a resource could not be rolled back — and refuses updates; it never existed, so it is deleted before the deploy creates it again."""
-        status = self._status(ctx)
-
-        if status not in FAILED_CREATION:
-            return
-
-        stack = self._stack(ctx)
-        logger.info("stack %s is %s: deleting it before the deploy", stack, status)
-        region = self._region(ctx)
-        env = self.env(ctx)
-        self._delete_stack(stack, region, env)
-
-        if self._status(ctx) != "DELETE_FAILED":
-            return
-
-        stuck = [
-            row["LogicalResourceId"]
-            for row in shell.aws(
-                "cloudformation",
-                "describe-stack-resources",
-                "--stack-name",
-                stack,
-                region=region,
-                env=env,
-            ).get("StackResources", [])
-            if row.get("ResourceStatus") == "DELETE_FAILED"
-        ]
-        logger.info("stack %s kept %s: deleting it without them", stack, stuck)
-        self._delete_stack(stack, region, env, retain=stuck)
-
-    def _delete_stack(
-        self,
-        stack: str,
-        region: str | None,
-        env: dict[str, str] | None,
-        retain: list[str] | None = None,
-    ) -> None:
-        """Delete and wait; a delete that fails leaves the stack in DELETE_FAILED for the caller to look at."""
-        args = ["cloudformation", "delete-stack", "--stack-name", stack]
-
-        if retain:
-            args += ["--retain-resources", *retain]
-
-        shell.aws(*args, region=region, env=env)
-
-        try:
-            shell.aws(
-                "cloudformation",
-                "wait",
-                "stack-delete-complete",
-                "--stack-name",
-                stack,
-                region=region,
-                env=env,
-            )
-        except DeployError:
-            if retain:
-                raise
-
     def deploy(self, ctx: Context) -> DeployResult:
-        sam = shell.require("sam", "pip install aws-sam-cli")
-        stage = self._stage(ctx)
-        env = self.env(ctx)
+        shell.require("sam", HINT)
+        spec = self.spec(ctx)
+        parts = self.parts(spec, self.credentials(ctx, spec).access(spec))
 
-        if (env or {}).get("AP_BOUNDARY") and not self._takes_boundary(ctx):
+        if spec.connected and not spec.takes_boundary:
             raise DeployError(
                 "template.yaml lacks the PermissionsBoundaryArn or RolePath parameter, so the execution role "
                 "would land outside what a connected account may create: apply the aws/lambda overlay again "
                 "(Configuration → Deploy target, or action-platform cloud set aws/lambda)"
             )
 
-        shell.run([*sam, "build"], cwd=ctx.repo_root, env=env)
-        self._clear_failed_creation(ctx)
-        args = [
-            *sam,
-            "deploy",
-            "--no-confirm-changeset",
-            "--no-fail-on-empty-changeset",
-            "--stack-name",
-            self._stack(ctx),
-        ]
-
-        if stage != "default":
-            args += ["--config-env", stage]
-
-        args += self._overrides(ctx, env)
-        args += self._tags(ctx, env)
-        shell.run(args, cwd=ctx.repo_root, env=env)
-        url = self._url(ctx)
+        parts.sam.build()
+        parts.stack.clear_failed_creation()
+        parts.sam.deploy()
 
         return DeployResult(
-            ok=True, target=self.name, version=ctx.next_version, url=url
+            ok=True,
+            target=self.name,
+            version=spec.version,
+            url=url_of(outputs_of(parts.stack.describe())),
         )
 
     def rollback(self, ctx: Context, to_version: str | None = None) -> None:
@@ -535,143 +175,38 @@ class LambdaTarget(DeployTarget):
                 "to reach a version, check it out and deploy"
             )
 
-        shell.aws(
-            "cloudformation",
-            "rollback-stack",
-            "--stack-name",
-            self._stack(ctx),
-            region=self._region(ctx),
-            env=self.env(ctx),
-        )
+        spec = self.spec(ctx)
+        self.parts(spec, self.credentials(ctx, spec).access(spec)).stack.rollback()
 
     def diagnose(self, ctx: Context) -> Diagnosis:
-        stack = self._stack(ctx)
+        spec = self.spec(ctx)
+        stack = spec.stack
+        row = self.parts(
+            spec, self.credentials(ctx, spec).access(spec)
+        ).stack.describe()
 
-        try:
-            data = shell.aws(
-                "cloudformation",
-                "describe-stacks",
-                "--stack-name",
-                stack,
-                region=self._region(ctx),
-                env=self.env(ctx),
-            )
-        except DeployError as e:
+        if row is None:
             return Diagnosis(
-                ok=False, target=self.name, status="missing", details={"error": str(e)}
+                ok=False, target=self.name, status="missing", details={"stack": stack}
             )
 
-        rows = data.get("Stacks") or []
-        status = rows[0].get("StackStatus", "") if rows else "missing"
-        outputs = (
-            {o["OutputKey"]: o["OutputValue"] for o in (rows[0].get("Outputs") or [])}
-            if rows
-            else {}
-        )
-        url = (
-            outputs.get("ApiUrl")
-            or outputs.get("HttpApiUrl")
-            or next((v for k, v in outputs.items() if "url" in k.lower()), None)
-        )
+        status = row.get("StackStatus", "")
+        outputs = outputs_of(row)
 
         return Diagnosis(
             ok=status.endswith("_COMPLETE") and not status.startswith("ROLLBACK"),
             target=self.name,
             status=status,
-            url=url,
+            url=url_of(outputs),
             details={"stack": stack, **{k: str(v) for k, v in outputs.items()}},
         )
 
     def delete(self, ctx: Context) -> None:
         """The stage's stack goes, and with it the execution role SAM created."""
-        if self.diagnose(ctx).status == "missing":
+        spec = self.spec(ctx)
+        parts = self.parts(spec, self.credentials(ctx, spec).access(spec))
+
+        if parts.stack.describe() is None:
             return
 
-        sam = shell.require("sam", "pip install aws-sam-cli")
-        args = [*sam, "delete", "--no-prompts", "--stack-name", self._stack(ctx)]
-        region = self._region(ctx)
-
-        if region:
-            args += ["--region", region]
-
-        shell.run(args, cwd=ctx.repo_root, env=self.env(ctx))
-
-    def _url(self, ctx: Context) -> str | None:
-        try:
-            return self.diagnose(ctx).url
-        except DeployError:
-            return None
-
-
-def _role_of(arn: str) -> str | None:
-    found = re.match(r"^arn:aws:sts::(\d+):assumed-role/([^/]+)/", arn)
-
-    return f"arn:aws:iam::{found.group(1)}:role/{found.group(2)}" if found else None
-
-
-def role_path(prefix: str) -> str:
-    """Where a connected account keeps an app's execution roles: CloudFormation cuts a generated role name to 64 characters, which can drop the prefix from it, so the app's roles are told apart by their IAM path instead."""
-    return f"/action-platform/{prefix}/"
-
-
-def connected_env(
-    ctx: Context, role_arn: str, prefix: str, session_name: str, region: str | None
-) -> dict[str, str]:
-    """The connected account's deploy role, assumed with the platform's token for this app — whose session tag is `prefix` — plus what the deploy needs to stay inside it: the stack prefix, the role to simulate, the boundary the execution role takes."""
-    account = role_arn.split(":")[4] if role_arn.count(":") >= 5 else ""
-
-    return {
-        **assume_role(ctx, role_arn, session_name, region),
-        "AP_STACK_PREFIX": prefix,
-        "AP_DEPLOY_ROLE": role_arn,
-        "AP_BOUNDARY": f"arn:aws:iam::{account}:{BOUNDARY}",
-    }
-
-
-def assume_role(
-    ctx: Context, role_arn: str, session_name: str, region: str | None
-) -> dict[str, str]:
-    """Temporary credentials for `role_arn` from an OIDC token: the platform's for a deploy it runs, the platform the CLI is logged in to otherwise."""
-    token = ctx.identity_token("sts.amazonaws.com")
-
-    if token is None:
-        try:
-            token = Remote.from_credentials().identity_token("sts.amazonaws.com")[
-                "token"
-            ]
-        except ActionPlatformError as e:
-            raise DeployError(
-                f"role_arn is set but nothing can sign an identity token here: {e}. "
-                "Deploy from the platform, or log in with `action-platform login`."
-            ) from e
-
-    data = shell.aws(
-        "sts",
-        "assume-role-with-web-identity",
-        "--role-arn",
-        role_arn,
-        "--role-session-name",
-        session_name,
-        "--web-identity-token",
-        token,
-        "--duration-seconds",
-        "3600",
-        region=region,
-        env={
-            k: v
-            for k, v in os.environ.items()
-            if not k.startswith("AWS_ACCESS") and k != "AWS_SESSION_TOKEN"
-        },
-    )
-    creds = data.get("Credentials") or {}
-
-    if not creds.get("AccessKeyId"):
-        raise DeployError(
-            f"assume-role-with-web-identity gave no credentials for {role_arn}"
-        )
-
-    return {
-        "AWS_ACCESS_KEY_ID": creds["AccessKeyId"],
-        "AWS_SECRET_ACCESS_KEY": creds["SecretAccessKey"],
-        "AWS_SESSION_TOKEN": creds["SessionToken"],
-    }
+        parts.sam.delete()

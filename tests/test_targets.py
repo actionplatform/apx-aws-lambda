@@ -183,15 +183,22 @@ class LambdaTargetTest(unittest.TestCase):
             "        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:25\n"
         )
         target = LambdaTarget(region="us-east-1")
-        target._env = {
-            "AP_DEPLOY_ROLE": "arn:aws:iam::1:role/action-platform/ap-deploy-x",
-            "AP_STACK_PREFIX": "ap-x",
-        }
         simulated: list[list[str]] = []
 
         def run(args, cwd=None, env=None):
             self.calls.append([Path(args[0]).name, *args[1:]])
             key = " ".join(args[1:3])
+
+            if key == "sts assume-role-with-web-identity":
+                return json.dumps(
+                    {
+                        "Credentials": {
+                            "AccessKeyId": "A",
+                            "SecretAccessKey": "s",
+                            "SessionToken": "t",
+                        }
+                    }
+                )
 
             if key == "sts get-caller-identity":
                 return json.dumps(
@@ -231,10 +238,18 @@ class LambdaTargetTest(unittest.TestCase):
         with mock.patch.multiple(
             shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
         ):
-            checks = {c.id: c for c in target.readiness(self.ctx("prod"))}
+            ctx = self.ctx("prod")
+            ctx.env.update(
+                {
+                    "AP_AWS_LAMBDA_ROLE_ARN": "arn:aws:iam::1:role/action-platform/ActionPlatformDeploy",
+                    "AP_APP": "acme/x/y",
+                }
+            )
+            ctx.identity = lambda aud: "jwt"
+            checks = {c.id: c for c in target.readiness(ctx)}
 
         self.assertTrue(checks["aws.credentials"].ok)
-        self.assertEqual(checks["stack.name"].detail, "ap-x-prod")
+        self.assertEqual(checks["stack.name"].detail, "ap-acme-x-y-prod")
         self.assertTrue(checks["stack.state"].ok)
         self.assertFalse(checks["aws.permissions"].ok)
         self.assertIn("lambda:GetLayerVersion", checks["aws.permissions"].detail)
@@ -527,8 +542,9 @@ class ConnectedAccountTest(unittest.TestCase):
         ctx = self.ctx()
         ctx.env["AP_AWS_LAMBDA_ROLE_ARN"] = "123456789012"
 
+        connected = LambdaTarget().spec(ctx).connected
         self.assertEqual(
-            LambdaTarget().connected(ctx), (self.ROLE, "ap-acme-shop-orders")
+            (connected.role, connected.prefix), (self.ROLE, "ap-acme-shop-orders")
         )
 
     def test_the_connect_command_fills_in_the_platform_and_the_organization(self):
@@ -608,11 +624,11 @@ class ConnectedAccountTest(unittest.TestCase):
     def test_a_role_of_the_repository_wins_over_the_connected_account(self):
         target = LambdaTarget(role_arn="arn:aws:iam::1:role/own")
 
-        self.assertIsNone(target.connected(self.ctx()))
+        self.assertIsNone(target.spec(self.ctx()).connected)
 
     def test_without_the_app_it_says_so(self):
         with self.assertRaises(DeployError) as caught:
-            LambdaTarget().connected(self.ctx(app=None))
+            LambdaTarget().spec(self.ctx(app=None))
 
         self.assertIn("<org>/<project>/<app>", str(caught.exception))
 
@@ -674,3 +690,48 @@ class ShellStreamsSamTest(unittest.TestCase):
 
         streamed.assert_not_called()
         self.assertEqual(out.strip(), '{"ok": 1}')
+
+
+class PartsTest(unittest.TestCase):
+    def test_one_responsibility_is_swapped_without_touching_the_rest(self):
+        from dataclasses import replace as swap
+
+        from apx_aws_lambda.abc import Sam
+
+        class Recorded(Sam):
+            def __init__(self):
+                self.done = []
+
+            def build(self):
+                self.done.append("build")
+
+            def deploy(self):
+                self.done.append("deploy")
+
+            def delete(self):
+                self.done.append("delete")
+
+            def validate(self):
+                self.done.append("validate")
+
+        recorded = Recorded()
+
+        class Target(LambdaTarget):
+            def parts(self, spec, access):
+                return swap(super().parts(spec, access), sam=recorded)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "samconfig.toml").write_text(SAMCONFIG)
+            (root / "template.yaml").write_text("Resources: {}\n")
+            ctx = Context(repo_root=root, stage="dev", next_version="1.0.0")
+
+            with mock.patch.multiple(
+                shell,
+                run=lambda args, cwd=None, env=None: "{}",
+                require=lambda t, h: [f"/usr/bin/{t}"],
+            ):
+                result = Target().deploy(ctx)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(recorded.done, ["build", "deploy"])
