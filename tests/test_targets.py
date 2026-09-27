@@ -106,7 +106,7 @@ class LambdaTargetTest(unittest.TestCase):
                     {
                         "Stacks": [
                             {
-                                "StackStatus": next(statuses),
+                                "StackStatus": next(statuses, "UPDATE_COMPLETE"),
                                 "Outputs": [
                                     {"OutputKey": "ApiUrl", "OutputValue": "https://x"}
                                 ],
@@ -140,7 +140,14 @@ class LambdaTargetTest(unittest.TestCase):
 
             if " ".join(args[1:3]) == "cloudformation describe-stacks":
                 return json.dumps(
-                    {"Stacks": [{"StackStatus": next(statuses), "Outputs": []}]}
+                    {
+                        "Stacks": [
+                            {
+                                "StackStatus": next(statuses, "UPDATE_COMPLETE"),
+                                "Outputs": [],
+                            }
+                        ]
+                    }
                 )
 
             return "{}"
@@ -535,6 +542,68 @@ class ConnectedAccountTest(unittest.TestCase):
             "IssuerUrl={issuer} Organization={organization}", option.action_copy
         )
         self.assertIn("connect/template.yaml", option.action_copy)
+
+    def test_a_deploy_with_an_old_overlay_stops_before_building(self):
+        (self.root / "template.yaml").write_text("Resources: {}\n")
+
+        with self.patched(), self.assertRaises(DeployError) as caught:
+            LambdaTarget().deploy(self.ctx())
+
+        self.assertIn("overlay again", str(caught.exception))
+        self.assertNotIn(["sam", "build"], [c[:2] for c in self.calls])
+
+    def test_a_failed_creation_whose_delete_fails_is_deleted_keeping_the_stuck_role(
+        self,
+    ):
+        statuses = iter(["ROLLBACK_FAILED", "DELETE_FAILED", "UPDATE_COMPLETE"])
+
+        def run(args, cwd=None, env=None):
+            key = " ".join(args[1:3])
+
+            if key == "cloudformation describe-stacks":
+                self.calls.append([Path(args[0]).name, *args[1:]])
+                return json.dumps(
+                    {"Stacks": [{"StackStatus": next(statuses, "UPDATE_COMPLETE")}]}
+                )
+
+            if key == "cloudformation describe-stack-resources":
+                self.calls.append([Path(args[0]).name, *args[1:]])
+                return json.dumps(
+                    {
+                        "StackResources": [
+                            {
+                                "LogicalResourceId": "ApiFunctionRole",
+                                "ResourceStatus": "DELETE_FAILED",
+                            },
+                            {
+                                "LogicalResourceId": "ApiLogGroup",
+                                "ResourceStatus": "DELETE_COMPLETE",
+                            },
+                        ]
+                    }
+                )
+
+            if key == "cloudformation wait" and not any(
+                "--retain-resources" in c for c in self.calls
+            ):
+                self.calls.append([Path(args[0]).name, *args[1:]])
+                raise DeployError("Waiter StackDeleteComplete failed")
+
+            return self.run_fake(args, cwd, env)
+
+        with mock.patch.multiple(
+            shell, run=run, require=lambda t, h: [f"/usr/bin/{t}"]
+        ):
+            LambdaTarget().deploy(self.ctx())
+
+        deletes = [
+            c for c in self.calls if c[1:3] == ["cloudformation", "delete-stack"]
+        ]
+        self.assertEqual(len(deletes), 2)
+        self.assertEqual(
+            deletes[1][deletes[1].index("--retain-resources") + 1], "ApiFunctionRole"
+        )
+        self.assertNotIn("ApiLogGroup", deletes[1])
 
     def test_a_role_of_the_repository_wins_over_the_connected_account(self):
         target = LambdaTarget(role_arn="arn:aws:iam::1:role/own")
