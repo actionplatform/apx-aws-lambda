@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.3.0 — 2026-09-27
+
+### Features
+- **health:** a Lambda deploy succeeds only once the function answers
+- **stack:** a failed deploy names the resource and why
+
+### Refactoring
+- one ABC per responsibility, the target composes them
+
+### Docs
+- **readme:** describe 1.2.2 — Connect AWS, roles by path, stack per scope
+
+### CI
+- lint the overlay for every language and the connect template
+
 ## v1.2.2 — 2026-09-27
 
 ### Bug Fixes
