@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.0 — 2026-09-27
+
+### Bug Fixes
+- **connect:** scope execution roles by IAM path, not by name
+
 ## v1.1.0 — 2026-09-27
 
 ### Features
