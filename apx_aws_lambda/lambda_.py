@@ -115,6 +115,9 @@ class LambdaTarget(DeployTarget):
             if not checks[-1].ok:
                 return checks
 
+        if ctx.observed:
+            return checks + self._observed(ctx, spec)
+
         try:
             access = self.credentials(ctx, spec).access(spec)
         except DeployError as e:
@@ -149,6 +152,23 @@ class LambdaTarget(DeployTarget):
         checks.append(TemplateValidCheck(parts.sam).run(spec))
 
         return checks
+
+    def _observed(self, ctx: Context, spec: Spec) -> list[Check]:
+        """A stack its own pipeline deploys, with its own identity: the platform's credentials and permissions say nothing about that deploy, so only the stack's state is read, and only when an identity can read it."""
+        try:
+            access = self.credentials(ctx, spec).access(spec)
+        except DeployError:
+            access = None
+
+        if access is None or not CredentialsCheck(access).run(spec).ok:
+            return [TemplateValidCheck(self.parts(spec, Access(None)).sam).run(spec)]
+
+        parts = self.parts(spec, access)
+
+        return [
+            StackStateCheck(parts.stack).run(spec),
+            TemplateValidCheck(parts.sam).run(spec),
+        ]
 
     def deploy(self, ctx: Context) -> DeployResult:
         shell.require("sam", HINT)
