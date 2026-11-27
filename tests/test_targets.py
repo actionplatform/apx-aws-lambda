@@ -377,6 +377,61 @@ class LambdaTargetTest(unittest.TestCase):
         self.assertEqual(checks[-1].id, "aws.credentials")
         self.assertFalse(checks[-1].ok)
 
+    def test_readiness_of_an_observed_stack_without_credentials_checks_only_the_template(
+        self,
+    ):
+        target = LambdaTarget(region="us-east-1")
+
+        def run(args, cwd=None, env=None):
+            self.calls.append([Path(args[0]).name, *args[1:]])
+
+            if " ".join(args[1:3]) == "sts get-caller-identity":
+                raise DeployError("aws sts failed: Unable to locate credentials")
+
+            return "{}"
+
+        ctx = self.ctx("dev")
+        ctx.observed = True
+
+        with mock.patch.multiple(
+            shell, run=run, require=lambda tool, hint: [f"/usr/bin/{tool}"]
+        ):
+            checks = {c.id: c for c in target.readiness(ctx)}
+
+        self.assertNotIn("aws.credentials", checks)
+        self.assertNotIn("aws.permissions", checks)
+        self.assertNotIn("stack.state", checks)
+        self.assertTrue(checks["template.valid"].ok)
+        self.assertNotIn(
+            ["aws", "cloudformation", "describe-stacks"], [c[:3] for c in self.calls]
+        )
+
+    def test_readiness_of_an_observed_stack_reads_its_state_but_not_permissions(self):
+        target = LambdaTarget(region="us-east-1")
+        ctx = self.ctx("dev")
+        ctx.observed = True
+
+        with self.fake(
+            {
+                "sts get-caller-identity": {
+                    "Account": "1",
+                    "Arn": "arn:aws:sts::1:assumed-role/ap-deploy-x/p",
+                },
+                "cloudformation describe-stacks": {
+                    "Stacks": [{"StackStatus": "UPDATE_ROLLBACK_FAILED"}]
+                },
+            }
+        ):
+            checks = {c.id: c for c in target.readiness(ctx)}
+
+        self.assertNotIn("aws.credentials", checks)
+        self.assertNotIn("aws.permissions", checks)
+        self.assertFalse(checks["stack.state"].ok)
+        self.assertTrue(checks["template.valid"].ok)
+        self.assertNotIn(
+            ["aws", "iam", "simulate-principal-policy"], [c[:3] for c in self.calls]
+        )
+
     def test_diagnose_reads_the_stack(self):
         with self.fake(
             {
