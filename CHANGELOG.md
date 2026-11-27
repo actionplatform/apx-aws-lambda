@@ -1,3 +1,11 @@
+## v1.3.1 — 2026-11-28
+
+### Bug Fixes
+- **readiness:** an observed stack skips the platform's credentials and permissions
+
+### Chores
+- ignore the build directory
+
 # Changelog
 
 ## v1.3.0 — 2026-09-27
