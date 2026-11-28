@@ -54,14 +54,14 @@ The target looks for credentials in this order:
 | Under `[deploy]` | How | Who decides what the app may do |
 |---|---|---|
 | `role_arn` | `sts assume-role-with-web-identity` with a platform token | the role's trust and permission policies |
-| neither, and the organization's AWS account ID (or deploy role ARN) set on the platform (Plugins → AWS Lambda), which every deploy job carries as `AP_AWS_LAMBDA_ROLE_ARN` with `AP_APP` | `sts assume-role-with-web-identity` on the connect stack's role with the platform's token for the app | the token's session tag and the role's policy, in your account |
+| neither, and the organization's AWS account ID (or deploy role ARN) set on the platform (Connect → Deploy → AWS Lambda), which every deploy job carries as `AP_AWS_LAMBDA_ROLE_ARN` with `AP_APP` | `sts assume-role-with-web-identity` on the connect stack's role with the platform's token for the app | the token's session tag and the role's policy, in your account |
 | neither | the AWS CLI's own chain: SSO, profile, instance role | whatever that identity may do |
 
 ### A connected account (recommended)
 
 One CloudFormation stack, IAM only — no function, no table, nothing to upgrade. AWS itself trusts the platform's OIDC tokens; the token's session tag keeps each deploy inside its app.
 
-**1. Create the stack** — once per AWS account, with an IAM user or role that may create IAM resources (not the root account). On the platform: Plugins → AWS Lambda → Configure → **Connect AWS**. The button copies a command and opens AWS CloudShell, behind the AWS sign-in; paste the command and press Enter. It downloads this release's [`connect/template.yaml`](apx_aws_lambda/connect/template.yaml) from GitHub, deploys it as the stack `action-platform-connect` in `us-east-1` with the platform's url and the organization's slug, and prints the account ID.
+**1. Create the stack** — once per AWS account, with an IAM user or role that may create IAM resources (not the root account). On the platform: Connect → Deploy → AWS Lambda → Configure → **Connect AWS** (an instance owner installs the plugin first, under Admin → Plugins). The button copies a command and opens AWS CloudShell, behind the AWS sign-in; paste the command and press Enter. It downloads this release's [`connect/template.yaml`](apx_aws_lambda/connect/template.yaml) from GitHub, deploys it as the stack `action-platform-connect` in `us-east-1` with the platform's url and the organization's slug, and prints the account ID.
 
 Without the button, the same stack from a machine logged in to the account:
 
@@ -71,7 +71,7 @@ action-platform aws-lambda connect https://platform.example.com acme      # --re
 
 or in the console: CloudFormation → Create stack → *Upload a template file* → [`apx_aws_lambda/connect/template.yaml`](apx_aws_lambda/connect/template.yaml), parameters `IssuerUrl` (the platform's public url) and `Organization` (its slug), acknowledge IAM.
 
-**2. Tell the platform** — Plugins → AWS Lambda → Configure → **AWS account ID** = the 12 digits the command printed (the stack's `DeployRoleArn` output works too). Every app of the organization whose `platform.toml` says `target = "aws/lambda"` deploys from then on; nothing to register per app.
+**2. Tell the platform** — Connect → Deploy → AWS Lambda → Configure → **AWS account ID** = the 12 digits the command printed (the stack's `DeployRoleArn` output works too). Every app of the organization whose `platform.toml` says `target = "aws/lambda"` deploys from then on; nothing to register per app.
 
 What the stack creates:
 
