@@ -139,6 +139,10 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:lambda:*:${AWS::AccountId}:function:${!aws:PrincipalTag/action-platform:prefix}*"
                   - !Sub "arn:aws:lambda:*:${AWS::AccountId}:layer:${!aws:PrincipalTag/action-platform:prefix}*"
+              - Sid: FunctionMetrics
+                Effect: Allow
+                Action: cloudwatch:GetMetricStatistics
+                Resource: "*"
               - Sid: PublicLayers
                 Effect: Allow
                 Action: lambda:GetLayerVersion
@@ -209,6 +213,9 @@ Resources:
                   - arn:aws:s3:::aws-sam-cli-managed-default-*/*
 
 Outputs:
+  TemplateVersion:
+    Description: Bumped when the deploy role's policy changes; update the stack when it is behind the plugin's
+    Value: "2"
   DeployRoleArn:
     Description: Paste on the platform - Plugins, AWS Lambda, Configure, Deploy role ARN
     Value: !GetAtt DeployRole.Arn
