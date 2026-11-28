@@ -1,3 +1,13 @@
+## v1.4.0 — 2026-11-28
+
+### Features
+- **strategies:** deployment strategies through a weighted `live` alias: recreate, canary, blue-green and rolling (linear); shadow is refused, Lambda cannot mirror invocations (#61)
+- **health:** CloudWatch Errors and Throttles of the new version, plus the stack's health route (#61)
+
+### Upgrade notes
+- Requires action-platform 0.40.0.
+- Update the `action-platform-connect` stack for `cloudwatch:GetMetricStatistics` (used by health), and re-apply the overlay once per app to add the `live` alias.
+
 ## v1.3.1 — 2026-11-28
 
 ### Bug Fixes
