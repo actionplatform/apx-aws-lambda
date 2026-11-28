@@ -26,6 +26,10 @@ class Options:
     session_name: str = "action-platform"
     app: str | None = None
     health: str = "/health"
+    retain_versions: int | None = None
+    max_errors: int = 0
+    max_throttles: int = 0
+    health_window: int = 300
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,10 @@ class Spec:
         own.append(f"{PREFIX_TAG}={self.connected.prefix}")
 
         return ["--tags", " ".join(own)]
+
+    @property
+    def function(self) -> str:
+        return f"{self.stack}-api"
 
     @property
     def template(self) -> Path:

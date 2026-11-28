@@ -49,6 +49,14 @@
       ]
     },
     {
+      "Sid": "FunctionMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:GetMetricStatistics"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "LambdaLayerPublish",
       "Effect": "Allow",
       "Action": [

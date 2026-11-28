@@ -18,6 +18,7 @@ action-platform diagnose
   - [Updating the connect stack](#updating-the-connect-stack)
   - [A role of your own (OIDC)](#a-role-of-your-own-oidc)
   - [The AWS CLI's own credentials](#the-aws-clis-own-credentials)
+- [Deployment strategies](#deployment-strategies)
 - [Where the deploy runs](#where-the-deploy-runs)
 - [Tools and commands](#tools-and-commands)
 - [Requirements](#requirements)
@@ -125,6 +126,37 @@ role_arn = "arn:aws:iam::123456789012:role/shop-deploy"
 ### The AWS CLI's own credentials
 
 With neither `role_arn` nor a connected account, `aws` and `sam` use what the machine has: `aws sso login`, a profile, an instance role. Still no key in a file when you use SSO — but nothing ties the identity to one app.
+
+## Deployment strategies
+
+The overlay publishes the function through the alias `live` (`AutoPublishAlias: live`), and the HTTP API invokes that alias. The target answers the core's strategy operations with Lambda versions and the alias's weighted routing:
+
+| Operation | What it does |
+|---|---|
+| `deploy_new` | the regular deploy, then — below weight 100 — the alias is put back on the version that was serving, with the new version at weight 0 (`AdditionalVersionWeights`) |
+| `shift` / `replace` | the new version gets `weight`% of the invocations; 100 points `live` at it and clears the routing |
+| `retire_old` | clears the routing; with `retain_versions` under `[deploy]`, deletes the oldest versions beyond that many |
+| `rollback` | points `live` back at the version that was serving (the previous published one after a full shift) and clears the routing |
+| `health` | CloudWatch `Errors` and `Throttles` of the new version over the last `health_window` seconds against `max_errors` and `max_throttles`, and the health route through the HTTP API when the stack has a url |
+| `status` | the version `live` serves and the routing weights |
+
+`recreate`, `canary`, `blue_green` and `rolling` (as linear) run on it. `shadow` does not: it needs `mirror`, and an alias splits invocations between versions but cannot copy them.
+
+```toml
+[deploy]
+retain_versions = 5     # optional; delete older versions at retire_old. Unset keeps them all
+max_errors = 0          # optional; errors tolerated in the window
+max_throttles = 0       # optional
+health_window = 300     # optional; seconds of CloudWatch data
+```
+
+The CloudFormation update moves `live` to the new version before `deploy_new` puts it back, so the new version can serve for the seconds between the two; a deploy that fails its health route is put back as well.
+
+### Migrating an existing install
+
+- **The stack.** Update the connect stack (`TemplateVersion` 2): it adds `cloudwatch:GetMetricStatistics` to `ActionPlatformDeploy`, which `health` needs. Lambda actions on versions and the alias are already inside the role's `lambda:*` on the app's functions.
+- **Each app.** Apply the overlay again (Configuration → **Deploy target**, or `action-platform cloud set aws/lambda`) and deploy once: the template gains the alias and the HTTP API starts invoking it, an ordinary stack update. Until then the strategy operations answer that the function has no `live` alias, and a plain deploy works as before.
+- **Your own role** (`role_arn`): add `cloudwatch:GetMetricStatistics` (see `requirements/policy.json`).
 
 ## Where the deploy runs
 

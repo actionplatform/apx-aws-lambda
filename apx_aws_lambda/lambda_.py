@@ -7,13 +7,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from action_platform.abc import DeployTarget
+from action_platform.abc import DeployTarget, TargetOperations
 from action_platform.core.context import Check, Context, DeployResult, Diagnosis
 from action_platform.core.exception import DeployError
 from action_platform.logging import emit
 
 from apx_aws_lambda import shell
-from apx_aws_lambda.abc import Access, Credentials, Health, Sam, Stack
+from apx_aws_lambda.abc import Access, Alias, Credentials, Health, Sam, Stack
+from apx_aws_lambda.alias import LambdaAlias
 from apx_aws_lambda.checks import (
     BoundaryCheck,
     CredentialsCheck,
@@ -26,6 +27,7 @@ from apx_aws_lambda.checks import (
 )
 from apx_aws_lambda.credentials import credentials_for
 from apx_aws_lambda.health import HttpHealth
+from apx_aws_lambda.operations import LambdaOperations
 from apx_aws_lambda.sam import HINT, SamCli
 from apx_aws_lambda.spec import Options, Spec
 from apx_aws_lambda.stack import CloudFormationStack, outputs_of, url_of
@@ -38,6 +40,7 @@ class Parts:
     access: Access
     stack: Stack
     sam: Sam
+    alias: Alias
 
 
 class LambdaTarget(DeployTarget):
@@ -52,6 +55,10 @@ class LambdaTarget(DeployTarget):
         session_name: str = "action-platform",
         app: str | None = None,
         health: str = "/health",
+        retain_versions: int | None = None,
+        max_errors: int = 0,
+        max_throttles: int = 0,
+        health_window: int = 300,
         **_: object,
     ) -> None:
         self.options = Options(
@@ -63,6 +70,10 @@ class LambdaTarget(DeployTarget):
             session_name=session_name,
             app=app,
             health=health,
+            retain_versions=retain_versions,
+            max_errors=max_errors,
+            max_throttles=max_throttles,
+            health_window=health_window,
         )
 
     def spec(self, ctx: Context) -> Spec:
@@ -77,7 +88,11 @@ class LambdaTarget(DeployTarget):
             access=access,
             stack=CloudFormationStack(spec, access),
             sam=SamCli(spec, access),
+            alias=LambdaAlias(spec, access),
         )
+
+    def operations(self) -> TargetOperations:
+        return LambdaOperations(self)
 
     def env(self, ctx: Context) -> dict[str, str] | None:
         """The environment `aws` and `sam` run with: temporary credentials from `role_arn` or the connected account's deploy role, else the caller's own."""

@@ -64,6 +64,7 @@ Resources:
       Runtime: java21
 {%- endif %}
 {%- endif %}
+      AutoPublishAlias: live
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       RolePath: !Ref RolePath
       Layers:

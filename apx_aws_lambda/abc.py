@@ -50,6 +50,29 @@ class Stack(ABC):
         """Why the latest operation failed: each FAILED resource and its reason."""
 
 
+class Alias(ABC):
+    """The function's `live` alias, the one the HTTP API invokes: which version it serves and how traffic splits between two."""
+
+    @abstractmethod
+    def read(self) -> dict:
+        """`{"version": primary, "weights": {version: share}}`; raises DeployError when the alias does not exist."""
+
+    @abstractmethod
+    def point(self, version: str, weights: dict[str, float] | None = None) -> None:
+        """Serve `version`, sending each `weights` version its share (0 to 1) of the invocations."""
+
+    @abstractmethod
+    def versions(self) -> list[str]:
+        """Published versions, oldest first."""
+
+    @abstractmethod
+    def delete_version(self, version: str) -> None: ...
+
+    @abstractmethod
+    def errors(self, version: str, window: int) -> dict[str, float]:
+        """Errors, Throttles and Invocations of `version` over the last `window` seconds."""
+
+
 class Sam(ABC):
     """The SAM CLI on the repository."""
 
