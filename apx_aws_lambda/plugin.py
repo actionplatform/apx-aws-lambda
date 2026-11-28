@@ -38,7 +38,7 @@ class AwsLambdaPlugin(Plugin):
     description = (
         "Deploy to AWS Lambda with SAM; read CloudFormation stacks and functions"
     )
-    min_core = "0.32.0"
+    min_core = "0.40.0"
     needs = [
         "tool: aws, sam (bundled as Python packages when not on PATH)",
         "env: AWS_REGION; credentials from role_arn (the connected account's deploy role, OIDC, no keys) or the AWS CLI chain (SSO, profile, instance role)",
